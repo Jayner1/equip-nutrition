@@ -4,15 +4,11 @@
   "description": "Nutrition coaching web app for CrossFit gym clients",
   "main": "index.js",
   "scripts": {
-    "dev": "concurrently \"npm run dev --prefix server\" \"npm run dev --prefix client\"",
-    "build": "npm run build --prefix client",
-    "start": "npm run start --prefix server"
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "type": "commonjs",
   "dependencies": {
-    "concurrently": "^9.2.1"
+    "vite": "^8.0.10"
   }
 }
