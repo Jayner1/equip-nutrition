@@ -1,0 +1,205 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: Arial, Helvetica, sans-serif;
+  background: #f5f7fb;
+  color: #10213a;
+}
+
+#root {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 20px;
+}
+
+.app-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.page-header {
+  background: #13213a;
+  color: #ffffff;
+  border-radius: 12px;
+  padding: 20px;
+}
+
+.page-header h1 {
+  margin: 0 0 10px;
+}
+
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+}
+
+.panel {
+  background: #ffffff;
+  border: 1px solid #d9e0ec;
+  border-radius: 12px;
+  padding: 20px;
+}
+
+.panel h2 {
+  margin-top: 0;
+}
+
+.form-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.inline-field-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-weight: 600;
+  font-size: 14px;
+}
+
+input,
+select,
+textarea,
+button {
+  font: inherit;
+}
+
+input,
+select,
+textarea {
+  border: 1px solid #bcc8dd;
+  border-radius: 8px;
+  padding: 10px;
+}
+
+textarea {
+  resize: vertical;
+}
+
+button {
+  border: none;
+  background: #f97316;
+  color: #ffffff;
+  padding: 10px 14px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.danger-button {
+  background: #b91c1c;
+}
+
+button:disabled {
+  background: #94a3b8;
+  cursor: not-allowed;
+}
+
+.back-button {
+  width: fit-content;
+}
+
+.preview-card {
+  background: #eff6ff;
+  border: 1px solid #c4ddff;
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.recommendation-card {
+  margin-top: 16px;
+}
+
+.muted-text {
+  color: #475569;
+  font-size: 13px;
+}
+
+.client-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.client-list a {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  text-decoration: none;
+  color: #10213a;
+  border: 1px solid #d8e1ef;
+  border-radius: 8px;
+  padding: 10px;
+}
+
+.profile-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px 14px;
+}
+
+.error-text {
+  margin: 0;
+  color: #b91c1c;
+  font-weight: 600;
+}
+
+.success-text {
+  margin: 0;
+  color: #166534;
+  font-weight: 600;
+}
+
+.check-in-list {
+  list-style: none;
+  margin: 16px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.check-in-list li {
+  border: 1px solid #d8e1ef;
+  border-radius: 8px;
+  padding: 10px;
+  background: #f8fafc;
+}
+
+.check-in-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+}
+
+.check-in-list p {
+  margin: 8px 0 0;
+}
+
+@media (max-width: 900px) {
+  .dashboard-grid {
+    grid-template-columns: 1fr;
+  }
+}
