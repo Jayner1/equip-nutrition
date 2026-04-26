@@ -1,8 +1,17 @@
+import {
+  collection,
+  deleteDoc,
+  doc,
+  getDoc,
+  getDocs,
+  orderBy,
+  query,
+  setDoc,
+  updateDoc,
+} from "firebase/firestore";
+import { db } from "./firebase";
 import { useEffect, useMemo, useState } from "react";
 import { Link, Route, Routes, useNavigate, useParams } from "react-router-dom";
-
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:5000/api";
-
 const activityOptions = [
   { value: 14, label: "14 - Very inactive" },
   { value: 15, label: "15 - Light activity" },
@@ -36,6 +45,189 @@ const defaultCheckInState = {
   date: new Date().toISOString().split("T")[0],
 };
 
+function round(value) {
+  return Math.round(Number(value));
+}
+
+function toNullableNumber(value) {
+  if (value === "" || value === null || value === undefined) {
+    return null;
+  }
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function calculateMaintenanceCalories(weight, activityMultiplier) {
+  return round(Number(weight) * Number(activityMultiplier));
+}
+
+function calculateCalorieTarget(maintenanceCalories, goal, overrideCalorieTarget) {
+  if (overrideCalorieTarget !== null && overrideCalorieTarget !== undefined) {
+    return round(overrideCalorieTarget);
+  }
+  if (goal === "Cut") {
+    return maintenanceCalories - 400;
+  }
+  if (goal === "Bulk") {
+    return maintenanceCalories + 350;
+  }
+  return maintenanceCalories;
+}
+
+function getBmi(weightLbs, totalHeightInches) {
+  if (!weightLbs || !totalHeightInches) {
+    return 0;
+  }
+  return (Number(weightLbs) / (Number(totalHeightInches) * Number(totalHeightInches))) * 703;
+}
+
+function getGoalWeightFromHeight(totalHeightInches) {
+  return (24.9 * Number(totalHeightInches) * Number(totalHeightInches)) / 703;
+}
+
+function getProteinReferenceWeight(weightLbs, totalHeightInches) {
+  const bmi = getBmi(weightLbs, totalHeightInches);
+  const goalWeight = getGoalWeightFromHeight(totalHeightInches);
+  let referenceWeight = Number(weightLbs);
+  let referenceMethod = "current bodyweight";
+
+  if (bmi >= 30) {
+    referenceWeight = goalWeight;
+    referenceMethod = "goal bodyweight";
+  }
+
+  return {
+    bmi: Number(bmi.toFixed(1)),
+    referenceWeight: round(referenceWeight),
+    referenceMethod,
+  };
+}
+
+function suggestCalorieAdjustment(goal, latestCheckIns = []) {
+  if (latestCheckIns.length < 2) {
+    return {
+      recommendedAdjustment: 0,
+      reason: "Need at least 2 weekly check-ins for a suggestion.",
+    };
+  }
+
+  const sorted = [...latestCheckIns].sort(
+    (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
+  );
+  const previous = Number(sorted[sorted.length - 2].weight);
+  const current = Number(sorted[sorted.length - 1].weight);
+  const weightDelta = current - previous;
+
+  if (goal === "Cut") {
+    if (weightDelta >= -0.25) {
+      return {
+        recommendedAdjustment: -150,
+        reason: "Fat loss appears stalled; consider a small calorie reduction.",
+      };
+    }
+    if (weightDelta <= -2) {
+      return {
+        recommendedAdjustment: 150,
+        reason: "Weight is dropping too quickly; consider slowing the deficit.",
+      };
+    }
+  }
+
+  if (goal === "Bulk") {
+    if (weightDelta <= 0.25) {
+      return {
+        recommendedAdjustment: 150,
+        reason: "Weight gain appears slow; consider a small calorie increase.",
+      };
+    }
+    if (weightDelta >= 2) {
+      return {
+        recommendedAdjustment: -150,
+        reason: "Weight gain appears rapid; consider reducing calories slightly.",
+      };
+    }
+  }
+
+  if (goal === "Maintenance" && Math.abs(weightDelta) >= 1.5) {
+    return {
+      recommendedAdjustment: weightDelta > 0 ? -150 : 150,
+      reason: "Weight is drifting from maintenance; consider a small correction.",
+    };
+  }
+
+  return {
+    recommendedAdjustment: 0,
+    reason: "Current trend looks on track. Keep calories unchanged this week.",
+  };
+}
+
+function hydrateClient(payload) {
+  const totalHeightInches =
+    Number(payload.heightFeet || 0) * 12 + Number(payload.heightInchesPart || 0);
+  const maintenanceCalories = calculateMaintenanceCalories(
+    payload.weight,
+    payload.activityMultiplier
+  );
+  const calorieTarget = calculateCalorieTarget(
+    maintenanceCalories,
+    payload.goal,
+    payload.overrideCalorieTarget
+  );
+
+  const proteinData = getProteinReferenceWeight(payload.weight, totalHeightInches);
+  const autoProteinGrams = round(proteinData.referenceWeight);
+  const fatPercent = Number(payload.fatPercent || 25);
+  const fatCalories = round(calorieTarget * (fatPercent / 100));
+  const autoFatGrams = round(fatCalories / 9);
+  const autoCarbGrams = Math.max(
+    round((calorieTarget - autoProteinGrams * 4 - fatCalories) / 4),
+    0
+  );
+
+  const recommendation = suggestCalorieAdjustment(payload.goal, payload.checkIns ?? []);
+
+  return {
+    ...payload,
+    totalHeightInches,
+    maintenanceCalories,
+    calorieTarget,
+    autoProteinGrams,
+    autoFatGrams,
+    autoCarbGrams,
+    proteinGrams:
+      payload.overrideProteinGrams !== null && payload.overrideProteinGrams !== undefined
+        ? round(payload.overrideProteinGrams)
+        : autoProteinGrams,
+    fatGrams:
+      payload.overrideFatGrams !== null && payload.overrideFatGrams !== undefined
+        ? round(payload.overrideFatGrams)
+        : autoFatGrams,
+    carbGrams:
+      payload.overrideCarbGrams !== null && payload.overrideCarbGrams !== undefined
+        ? round(payload.overrideCarbGrams)
+        : autoCarbGrams,
+    bmi: proteinData.bmi,
+    proteinReferenceWeight: proteinData.referenceWeight,
+    proteinReferenceMethod: proteinData.referenceMethod,
+    recommendedAdjustment: recommendation.recommendedAdjustment,
+    recommendationReason: recommendation.reason,
+  };
+}
+
+function normalizeClientRecord(id, data) {
+  return hydrateClient({
+    ...data,
+    _id: id,
+    age: data.age ?? null,
+    fatPercent: data.fatPercent ?? 25,
+    overrideCalorieTarget: data.overrideCalorieTarget ?? null,
+    overrideProteinGrams: data.overrideProteinGrams ?? null,
+    overrideFatGrams: data.overrideFatGrams ?? null,
+    overrideCarbGrams: data.overrideCarbGrams ?? null,
+    checkIns: Array.isArray(data.checkIns) ? data.checkIns : [],
+  });
+}
+
 function App() {
   return (
     <div className="app-layout">
@@ -52,20 +244,6 @@ function App() {
 }
 
 function Dashboard() {
-  const getProteinReferenceWeight = (weight, totalHeightInches) => {
-    if (!weight || !totalHeightInches) {
-      return 0;
-    }
-
-    const bmi = (Number(weight) / (Number(totalHeightInches) * Number(totalHeightInches))) * 703;
-    const goalWeight = (24.9 * Number(totalHeightInches) * Number(totalHeightInches)) / 703;
-
-    if (bmi >= 30) {
-      return Math.round(goalWeight);
-    }
-    return Math.round(Number(weight));
-  };
-
   const [clients, setClients] = useState([]);
   const [formData, setFormData] = useState(defaultFormState);
   const [error, setError] = useState("");
@@ -73,22 +251,19 @@ function Dashboard() {
 
   useEffect(() => {
     let isMounted = true;
+    const clientsQuery = query(collection(db, "clients"), orderBy("createdAt", "desc"));
 
-    fetch(`${API_BASE_URL}/clients`)
-      .then((response) => {
-        if (!response.ok) {
-          throw new Error("Failed to load clients.");
+    getDocs(clientsQuery)
+      .then((snapshot) => {
+        if (!isMounted) {
+          return;
         }
-        return response.json();
-      })
-      .then((data) => {
-        if (isMounted) {
-          setClients(data);
-        }
+        const rows = snapshot.docs.map((item) => normalizeClientRecord(item.id, item.data()));
+        setClients(rows);
       })
       .catch(() => {
         if (isMounted) {
-          setError("Unable to load clients. Check backend and database connection.");
+          setError("Unable to load clients from Firebase.");
         }
       });
 
@@ -123,9 +298,10 @@ function Dashboard() {
       return { protein: 0, fat: 0, carbs: 0 };
     }
 
-    const totalHeightInches =
-      Number(formData.heightFeet || 0) * 12 + Number(formData.heightInchesPart || 0);
-    const proteinAuto = getProteinReferenceWeight(formData.weight, totalHeightInches);
+    const proteinAuto = getProteinReferenceWeight(
+      formData.weight,
+      Number(formData.heightFeet || 0) * 12 + Number(formData.heightInchesPart || 0)
+    ).referenceWeight;
     const fatPercent = Number(formData.fatPercent || 25);
     const fatCalories = Math.round(targetPreview * (fatPercent / 100));
     const fatAuto = Math.round(fatCalories / 9);
@@ -176,23 +352,36 @@ function Dashboard() {
     setIsSubmitting(true);
 
     try {
-      const response = await fetch(`${API_BASE_URL}/clients`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(formData),
-      });
-      if (!response.ok) {
-        throw new Error("Failed to create client.");
-      }
+      const now = new Date().toISOString();
+      const payload = {
+        name: formData.name.trim(),
+        weight: Number(formData.weight),
+        age: toNullableNumber(formData.age),
+        heightFeet: Number(formData.heightFeet),
+        heightInchesPart: Number(formData.heightInchesPart),
+        activityMultiplier: Number(formData.activityMultiplier),
+        goal: formData.goal,
+        customPlan: formData.customPlan || "",
+        notes: formData.notes || "",
+        fatPercent: Number(formData.fatPercent || 25),
+        overrideCalorieTarget: toNullableNumber(formData.overrideCalorieTarget),
+        overrideProteinGrams: toNullableNumber(formData.overrideProteinGrams),
+        overrideFatGrams: toNullableNumber(formData.overrideFatGrams),
+        overrideCarbGrams: toNullableNumber(formData.overrideCarbGrams),
+        checkIns: [],
+        createdAt: now,
+        updatedAt: now,
+      };
+
+      const ref = doc(collection(db, "clients"));
+      await setDoc(ref, payload);
       setFormData(defaultFormState);
-      const clientsResponse = await fetch(`${API_BASE_URL}/clients`);
-      if (!clientsResponse.ok) {
-        throw new Error("Failed to refresh clients.");
-      }
-      const clientsData = await clientsResponse.json();
-      setClients(clientsData);
+      const clientsQuery = query(collection(db, "clients"), orderBy("createdAt", "desc"));
+      const snapshot = await getDocs(clientsQuery);
+      const rows = snapshot.docs.map((item) => normalizeClientRecord(item.id, item.data()));
+      setClients(rows);
     } catch {
-      setError("Unable to create client. Verify API and required fields.");
+      setError("Unable to create client in Firebase.");
     } finally {
       setIsSubmitting(false);
     }
@@ -418,29 +607,45 @@ function ClientProfile() {
   const [checkInStatus, setCheckInStatus] = useState("");
   const [isDeleting, setIsDeleting] = useState(false);
 
+  const loadClient = async () => {
+    const snapshot = await getDoc(doc(db, "clients", id));
+    if (!snapshot.exists()) {
+      throw new Error("Could not load client.");
+    }
+    const data = normalizeClientRecord(snapshot.id, snapshot.data());
+    setClient(data);
+    setFormData({
+      weight: data.weight ?? "",
+      heightFeet: data.heightFeet ?? "",
+      heightInchesPart: data.heightInchesPart ?? "",
+      activityMultiplier: data.activityMultiplier ?? 15,
+      goal: data.goal ?? "Maintenance",
+      fatPercent: data.fatPercent ?? 25,
+      overrideCalorieTarget: data.overrideCalorieTarget ?? "",
+      overrideProteinGrams: data.overrideProteinGrams ?? "",
+      overrideFatGrams: data.overrideFatGrams ?? "",
+      overrideCarbGrams: data.overrideCarbGrams ?? "",
+      customPlan: data.customPlan || "",
+      notes: data.notes || "",
+    });
+  };
+
   useEffect(() => {
     let isMounted = true;
-
-    fetch(`${API_BASE_URL}/clients/${id}`)
-      .then((response) => {
-        if (!response.ok) {
+    getDoc(doc(db, "clients", id))
+      .then((snapshot) => {
+        if (!snapshot.exists()) {
           throw new Error("Could not load client.");
         }
-        return response.json();
-      })
-      .then((data) => {
         if (!isMounted) {
           return;
         }
+        const data = normalizeClientRecord(snapshot.id, snapshot.data());
         setClient(data);
-        const derivedHeightFeet =
-          data.heightFeet ?? Math.floor(Number(data.totalHeightInches || data.heightInches || 0) / 12);
-        const derivedHeightInchesPart =
-          data.heightInchesPart ?? Number(data.totalHeightInches || data.heightInches || 0) % 12;
         setFormData({
           weight: data.weight ?? "",
-          heightFeet: derivedHeightFeet || "",
-          heightInchesPart: Number.isFinite(derivedHeightInchesPart) ? derivedHeightInchesPart : "",
+          heightFeet: data.heightFeet ?? "",
+          heightInchesPart: data.heightInchesPart ?? "",
           activityMultiplier: data.activityMultiplier ?? 15,
           goal: data.goal ?? "Maintenance",
           fatPercent: data.fatPercent ?? 25,
@@ -468,41 +673,25 @@ function ClientProfile() {
     setError("");
     setSavedMessage("");
     try {
-      const response = await fetch(`${API_BASE_URL}/clients/${id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(formData),
+      await updateDoc(doc(db, "clients", id), {
+        weight: Number(formData.weight),
+        heightFeet: Number(formData.heightFeet),
+        heightInchesPart: Number(formData.heightInchesPart),
+        activityMultiplier: Number(formData.activityMultiplier),
+        goal: formData.goal,
+        fatPercent: Number(formData.fatPercent || 25),
+        overrideCalorieTarget: toNullableNumber(formData.overrideCalorieTarget),
+        overrideProteinGrams: toNullableNumber(formData.overrideProteinGrams),
+        overrideFatGrams: toNullableNumber(formData.overrideFatGrams),
+        overrideCarbGrams: toNullableNumber(formData.overrideCarbGrams),
+        customPlan: formData.customPlan || "",
+        notes: formData.notes || "",
+        updatedAt: new Date().toISOString(),
       });
-
-      if (!response.ok) {
-        throw new Error("Save failed.");
-      }
-
-      const updatedClient = await response.json();
-      setClient(updatedClient);
-      const derivedHeightFeet =
-        updatedClient.heightFeet ??
-        Math.floor(Number(updatedClient.totalHeightInches || updatedClient.heightInches || 0) / 12);
-      const derivedHeightInchesPart =
-        updatedClient.heightInchesPart ??
-        Number(updatedClient.totalHeightInches || updatedClient.heightInches || 0) % 12;
-      setFormData({
-        weight: updatedClient.weight ?? "",
-        heightFeet: derivedHeightFeet || "",
-        heightInchesPart: Number.isFinite(derivedHeightInchesPart) ? derivedHeightInchesPart : "",
-        activityMultiplier: updatedClient.activityMultiplier ?? 15,
-        goal: updatedClient.goal ?? "Maintenance",
-        fatPercent: updatedClient.fatPercent ?? 25,
-        overrideCalorieTarget: updatedClient.overrideCalorieTarget ?? "",
-        overrideProteinGrams: updatedClient.overrideProteinGrams ?? "",
-        overrideFatGrams: updatedClient.overrideFatGrams ?? "",
-        overrideCarbGrams: updatedClient.overrideCarbGrams ?? "",
-        customPlan: updatedClient.customPlan || "",
-        notes: updatedClient.notes || "",
-      });
+      await loadClient();
       setSavedMessage("Changes saved.");
     } catch {
-      setError("Unable to save updates.");
+      setError("Unable to save updates to Firebase.");
     }
   };
 
@@ -512,25 +701,28 @@ function ClientProfile() {
     setCheckInStatus("");
 
     try {
-      const response = await fetch(`${API_BASE_URL}/clients/${id}/check-ins`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(checkInForm),
+      const nextCheckIns = [
+        ...(Array.isArray(client.checkIns) ? client.checkIns : []),
+        {
+          _id: crypto.randomUUID(),
+          weight: Number(checkInForm.weight),
+          notes: checkInForm.notes || "",
+          date: new Date(checkInForm.date).toISOString(),
+        },
+      ];
+
+      await updateDoc(doc(db, "clients", id), {
+        checkIns: nextCheckIns,
+        updatedAt: new Date().toISOString(),
       });
-
-      if (!response.ok) {
-        throw new Error("Check-in failed.");
-      }
-
-      const updatedClient = await response.json();
-      setClient(updatedClient);
+      await loadClient();
       setCheckInForm({
         ...defaultCheckInState,
         date: new Date().toISOString().split("T")[0],
       });
       setCheckInStatus("Weekly check-in saved.");
     } catch {
-      setError("Unable to save weekly check-in.");
+      setError("Unable to save weekly check-in to Firebase.");
     }
   };
 
@@ -545,17 +737,10 @@ function ClientProfile() {
     setError("");
     setIsDeleting(true);
     try {
-      const response = await fetch(`${API_BASE_URL}/clients/${id}`, {
-        method: "DELETE",
-      });
-
-      if (!response.ok) {
-        throw new Error("Delete failed.");
-      }
-
+      await deleteDoc(doc(db, "clients", id));
       navigate("/");
     } catch {
-      setError("Unable to delete this client profile.");
+      setError("Unable to delete this client profile from Firebase.");
       setIsDeleting(false);
     }
   };

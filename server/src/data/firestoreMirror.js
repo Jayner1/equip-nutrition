@@ -1,60 +1,54 @@
-let firebaseModulesPromise;
-
-async function getFirebaseModules() {
-  if (!firebaseModulesPromise) {
-    firebaseModulesPromise = Promise.all([import("firebase/app"), import("firebase/firestore")]);
-  }
-  const [appModule, firestoreModule] = await firebaseModulesPromise;
-  return {
-    initializeApp: appModule.initializeApp,
-    getApps: appModule.getApps,
-    getFirestore: firestoreModule.getFirestore,
-    collection: firestoreModule.collection,
-    doc: firestoreModule.doc,
-    getDoc: firestoreModule.getDoc,
-    getDocs: firestoreModule.getDocs,
-    query: firestoreModule.query,
-    orderBy: firestoreModule.orderBy,
-    setDoc: firestoreModule.setDoc,
-    deleteDoc: firestoreModule.deleteDoc,
-  };
-}
+const admin = require("firebase-admin");
 
 let db;
+
+function parsePrivateKey(rawKey) {
+  if (!rawKey) {
+    return "";
+  }
+  return rawKey.replace(/\\n/g, "\n");
+}
+
+function getServiceAccountFromEnv() {
+  const projectId = process.env.FIREBASE_PROJECT_ID;
+  const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
+  const privateKey = parsePrivateKey(process.env.FIREBASE_PRIVATE_KEY);
+
+  if (!projectId || !clientEmail || !privateKey) {
+    return null;
+  }
+
+  return {
+    projectId,
+    clientEmail,
+    privateKey,
+  };
+}
 
 async function getDb() {
   if (db) {
     return db;
   }
 
-  const projectId = process.env.FIREBASE_PROJECT_ID;
-  const apiKey = process.env.FIREBASE_API_KEY;
-  const appId = process.env.FIREBASE_APP_ID;
-
-  if (!projectId || !apiKey || !appId) {
+  const serviceAccount = getServiceAccountFromEnv();
+  if (!serviceAccount) {
     return null;
   }
 
-  const { initializeApp, getApps, getFirestore } = await getFirebaseModules();
-  const config = {
-    apiKey,
-    appId,
-    projectId,
-    authDomain: process.env.FIREBASE_AUTH_DOMAIN || `${projectId}.firebaseapp.com`,
-    storageBucket:
-      process.env.FIREBASE_STORAGE_BUCKET || `${projectId}.firebasestorage.app`,
-    messagingSenderId: process.env.FIREBASE_MESSAGING_SENDER_ID || "000000000000",
-  };
+  const app =
+    admin.apps.length > 0
+      ? admin.app()
+      : admin.initializeApp({
+          credential: admin.credential.cert(serviceAccount),
+          projectId: serviceAccount.projectId,
+        });
 
-  const app = getApps().length ? getApps()[0] : initializeApp(config);
-  db = getFirestore(app);
+  db = app.firestore();
   return db;
 }
 
 function isFirebaseConfigured() {
-  return Boolean(
-    process.env.FIREBASE_PROJECT_ID && process.env.FIREBASE_API_KEY && process.env.FIREBASE_APP_ID
-  );
+  return Boolean(getServiceAccountFromEnv());
 }
 
 async function listClientsFromFirestore() {
@@ -63,9 +57,7 @@ async function listClientsFromFirestore() {
     return null;
   }
 
-  const { collection, getDocs, query, orderBy } = await getFirebaseModules();
-  const clientsQuery = query(collection(database, "clients"), orderBy("createdAt", "desc"));
-  const snapshot = await getDocs(clientsQuery);
+  const snapshot = await database.collection("clients").orderBy("createdAt", "desc").get();
   return snapshot.docs.map((item) => ({ _id: item.id, ...item.data() }));
 }
 
@@ -75,10 +67,8 @@ async function getClientFromFirestore(id) {
     return null;
   }
 
-  const { doc, getDoc } = await getFirebaseModules();
-  const ref = doc(database, "clients", id);
-  const snapshot = await getDoc(ref);
-  if (!snapshot.exists()) {
+  const snapshot = await database.collection("clients").doc(id).get();
+  if (!snapshot.exists) {
     return undefined;
   }
   return { _id: snapshot.id, ...snapshot.data() };
@@ -90,8 +80,7 @@ async function upsertClientToFirestore(client) {
     return false;
   }
 
-  const { doc, setDoc } = await getFirebaseModules();
-  await setDoc(doc(database, "clients", client._id), { ...client, _id: client._id });
+  await database.collection("clients").doc(client._id).set({ ...client, _id: client._id });
   return true;
 }
 
@@ -101,8 +90,7 @@ async function deleteClientFromFirestore(id) {
     return false;
   }
 
-  const { doc, deleteDoc } = await getFirebaseModules();
-  await deleteDoc(doc(database, "clients", id));
+  await database.collection("clients").doc(id).delete();
   return true;
 }
 

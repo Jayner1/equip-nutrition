@@ -3,29 +3,20 @@
     "name": "Jason Yale",
     "weight": 186,
     "age": 34,
-    "heightInches": 72,
-    "activityMultiplier": 18,
+    "heightFeet": 5,
+    "heightInchesPart": 11,
+    "activityMultiplier": 15,
     "goal": "Maintenance",
     "customPlan": "",
-    "notes": "on track. ",
-    "fatPercent": 24,
+    "notes": "",
+    "fatPercent": 25,
     "overrideCalorieTarget": null,
-    "checkIns": [
-      {
-        "_id": "c3a62769-3a81-45c2-b458-e172d11efcb6",
-        "weight": 186,
-        "notes": "sadfasfasdfsadf",
-        "date": "2026-04-26T00:00:00.000Z"
-      },
-      {
-        "_id": "fc3d2b38-f3ca-48b2-b5b9-e229c7f20962",
-        "weight": 183,
-        "notes": "",
-        "date": "2026-04-26T00:00:00.000Z"
-      }
-    ],
-    "_id": "3aa665ba-c8a9-498a-97fb-deecdc231e2e",
-    "createdAt": "2026-04-26T16:27:07.078Z",
-    "updatedAt": "2026-04-26T16:51:47.528Z"
+    "overrideProteinGrams": null,
+    "overrideFatGrams": null,
+    "overrideCarbGrams": null,
+    "checkIns": [],
+    "_id": "8b4ade65-d732-4dd9-995f-abb13092af6f",
+    "createdAt": "2026-04-26T17:49:23.003Z",
+    "updatedAt": "2026-04-26T17:49:23.003Z"
   }
 ]

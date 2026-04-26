@@ -1,7 +1,7 @@
 ﻿const express = require("express");
 const { randomUUID } = require("crypto");
 const { hydrateClient } = require("../utils/clientMath");
-const { readClients, writeClients, withTimestamps } = require("../data/clientStore");
+const { withTimestamps } = require("../data/clientStore");
 const {
   isFirebaseConfigured,
   listClientsFromFirestore,
@@ -20,73 +20,39 @@ function toNullableNumber(value) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function ensureFirebaseConfigured(res) {
+  if (isFirebaseConfigured()) {
+    return true;
+  }
+
+  res.status(500).json({
+    message:
+      "Firebase Admin credentials are missing. Configure FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL, and FIREBASE_PRIVATE_KEY.",
+  });
+  return false;
+}
+
 async function readAllClients() {
-  if (!isFirebaseConfigured()) {
-    return readClients();
-  }
-
-  try {
-    const firestoreClients = await listClientsFromFirestore();
-    if (Array.isArray(firestoreClients)) {
-      return firestoreClients;
-    }
-  } catch (error) {
-    console.warn("Falling back to local client store:", error.message);
-  }
-
-  return readClients();
+  const firestoreClients = await listClientsFromFirestore();
+  return Array.isArray(firestoreClients) ? firestoreClients : [];
 }
 
 async function readClientById(id) {
-  if (isFirebaseConfigured()) {
-    try {
-      const firestoreClient = await getClientFromFirestore(id);
-      if (firestoreClient) {
-        return firestoreClient;
-      }
-    } catch (error) {
-      console.warn("Falling back to local client store:", error.message);
-    }
-  }
-
-  const localClients = await readClients();
-  return localClients.find((item) => item._id === id);
+  return getClientFromFirestore(id);
 }
 
 async function persistClient(client) {
-  const clients = await readClients();
-  const index = clients.findIndex((item) => item._id === client._id);
-  if (index >= 0) {
-    clients[index] = client;
-  } else {
-    clients.push(client);
-  }
-  await writeClients(clients);
-
-  if (isFirebaseConfigured()) {
-    try {
-      await upsertClientToFirestore(client);
-    } catch (error) {
-      console.warn("Could not sync client to Firestore:", error.message);
-    }
-  }
+  await upsertClientToFirestore(client);
 }
 
 async function removeClientById(id) {
-  const clients = await readClients();
-  const nextClients = clients.filter((item) => item._id !== id);
-  await writeClients(nextClients);
-
-  if (isFirebaseConfigured()) {
-    try {
-      await deleteClientFromFirestore(id);
-    } catch (error) {
-      console.warn("Could not delete client from Firestore:", error.message);
-    }
-  }
+  await deleteClientFromFirestore(id);
 }
 
 router.get("/", async (_req, res) => {
+  if (!ensureFirebaseConfigured(res)) {
+    return;
+  }
   const clients = await readAllClients();
   const hydrated = clients.map(hydrateClient);
   hydrated.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
@@ -94,6 +60,9 @@ router.get("/", async (_req, res) => {
 });
 
 router.get("/:id", async (req, res) => {
+  if (!ensureFirebaseConfigured(res)) {
+    return;
+  }
   const client = await readClientById(req.params.id);
   if (!client) {
     return res.status(404).json({ message: "Client not found" });
@@ -102,6 +71,9 @@ router.get("/:id", async (req, res) => {
 });
 
 router.post("/", async (req, res) => {
+  if (!ensureFirebaseConfigured(res)) {
+    return;
+  }
   const {
     name,
     weight,
@@ -161,6 +133,9 @@ router.post("/", async (req, res) => {
 });
 
 router.patch("/:id", async (req, res) => {
+  if (!ensureFirebaseConfigured(res)) {
+    return;
+  }
   const allowedFields = [
     "name",
     "weight",
@@ -238,6 +213,9 @@ router.patch("/:id", async (req, res) => {
 });
 
 router.post("/:id/check-ins", async (req, res) => {
+  if (!ensureFirebaseConfigured(res)) {
+    return;
+  }
   const { weight, notes, date } = req.body;
   const current = await readClientById(req.params.id);
   if (!current) {
@@ -265,6 +243,9 @@ router.post("/:id/check-ins", async (req, res) => {
 });
 
 router.delete("/:id", async (req, res) => {
+  if (!ensureFirebaseConfigured(res)) {
+    return;
+  }
   const current = await readClientById(req.params.id);
   if (!current) {
     return res.status(404).json({ message: "Client not found" });

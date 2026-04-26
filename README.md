@@ -1,12 +1,12 @@
-﻿# CrossFit Nutrition Coach
+﻿# Equip Nutrition Coaching
 
 Full-stack nutrition coaching app for a CrossFit side business.
 
 ## Tech Stack
 
 - Frontend: React + Vite
-- Backend: Node.js + Express
-- Storage: Local JSON store (`server/src/data/clients.json`)
+- Backend: Node.js + Express (Vercel serverless API)
+- Database: Firebase Firestore (Admin SDK)
 
 ## Features Implemented
 
@@ -45,6 +45,7 @@ Full-stack nutrition coaching app for a CrossFit side business.
 
 1. Create backend env file:
    - Copy `server/.env.example` to `server/.env`
+   - Fill Firebase Admin service-account values
 2. Install dependencies:
    - Root: `npm install`
    - Client: `npm install --prefix client`
@@ -54,7 +55,7 @@ Full-stack nutrition coaching app for a CrossFit side business.
 4. Open the frontend in browser:
    - `http://localhost:5173`
 
-Backend runs at `http://localhost:5000` by default.
+Backend runs at `http://localhost:5000` in local development.
 
 ## API Endpoints
 
@@ -72,10 +73,25 @@ To point frontend to a different API, add `client/.env`:
 
 ## Firebase Setup
 
-- Firebase project settings should be placed in `client/.env.local`, not in `firebase.json`.
-- Copy `client/.env.example` to `client/.env.local` and fill your values.
-- `firebase.json` is reserved for Firebase Hosting/CLI config.
-- Backend can sync clients to Firestore when `server/.env` includes:
+- Frontend Firebase config lives in `client/.env.local`.
+- Backend Firestore access uses Firebase Admin credentials in `server/.env`.
+- Required backend vars:
   - `FIREBASE_PROJECT_ID`
-  - `FIREBASE_API_KEY`
-  - `FIREBASE_APP_ID`
+  - `FIREBASE_CLIENT_EMAIL`
+  - `FIREBASE_PRIVATE_KEY`
+- For `FIREBASE_PRIVATE_KEY`, keep line breaks escaped as `\n`.
+
+## Deploy To Vercel
+
+1. Import this GitHub repo into Vercel.
+2. Vercel will use `vercel.json` to build the Vite app and serve API routes from `api/index.js`.
+3. In Vercel Project Settings -> Environment Variables, add:
+   - `FIREBASE_PROJECT_ID`
+   - `FIREBASE_CLIENT_EMAIL`
+   - `FIREBASE_PRIVATE_KEY`
+   - `VITE_FIREBASE_API_KEY`
+   - `VITE_FIREBASE_AUTH_DOMAIN`
+   - `VITE_FIREBASE_PROJECT_ID`
+   - `VITE_FIREBASE_STORAGE_BUCKET`
+   - `VITE_FIREBASE_MESSAGING_SENDER_ID`
+   - `VITE_FIREBASE_APP_ID`
