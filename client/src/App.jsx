@@ -22,11 +22,19 @@ const activityOptions = [
 
 const goals = ["Cut", "Bulk", "Maintenance"];
 
+/** Stored as "male" | "female"; unknown / legacy omit → neutral multiplier */
+const sexStoredValues = [
+  { value: "", label: "Select sex…" },
+  { value: "female", label: "Female" },
+  { value: "male", label: "Male" },
+];
+
 const defaultFormState = {
   name: "",
   weight: "",
   heightFeet: "",
   heightInchesPart: "",
+  sex: "",
   age: "",
   activityMultiplier: 15,
   goal: "Maintenance",
@@ -58,7 +66,49 @@ function toNullableNumber(value) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function calculateMaintenanceCalories(weight, activityMultiplier) {
+/** Normalize persisted sex for calculations and compares */
+function normalizeSex(raw) {
+  const s = String(raw ?? "").trim().toLowerCase();
+  if (s === "male" || s === "m") {
+    return "male";
+  }
+  if (s === "female" || s === "f") {
+    return "female";
+  }
+  return null;
+}
+
+/**
+ * Scales baseline (weight × activity) maintenance upward for men vs women and adjusts
+ * for age vs a reference adult (~32). Legacy clients missing sex behave like the old formula.
+ */
+function demographicMaintenanceMultipliers(sex, ageYears) {
+  let sexMultiplier = 1;
+  const s = normalizeSex(sex);
+  if (s === "male") {
+    sexMultiplier = 1.04;
+  } else if (s === "female") {
+    sexMultiplier = 0.96;
+  }
+
+  let ageMultiplier = 1;
+  if (ageYears != null && Number.isFinite(Number(ageYears))) {
+    const a = Number(ageYears);
+    if (a >= 14 && a <= 100) {
+      const referenceAge = 32;
+      ageMultiplier = 1 + (a - referenceAge) * -0.0012;
+      ageMultiplier = Math.max(0.9, Math.min(1.055, ageMultiplier));
+    }
+  }
+
+  return {
+    sexMultiplier,
+    ageMultiplier,
+    combinedMultiplier: sexMultiplier * ageMultiplier,
+  };
+}
+
+function baselineMaintenanceCalories(weight, activityMultiplier) {
   return round(Number(weight) * Number(activityMultiplier));
 }
 
@@ -271,10 +321,14 @@ function suggestCalorieAdjustment(goal, latestCheckIns = []) {
 function hydrateClient(payload) {
   const totalHeightInches =
     Number(payload.heightFeet || 0) * 12 + Number(payload.heightInchesPart || 0);
-  const maintenanceCalories = calculateMaintenanceCalories(
-    payload.weight,
-    payload.activityMultiplier
-  );
+  const ageVal =
+    payload.age !== null && payload.age !== undefined && Number.isFinite(Number(payload.age))
+      ? Number(payload.age)
+      : null;
+  const maintenanceBaseline = baselineMaintenanceCalories(payload.weight, payload.activityMultiplier);
+  const demo = demographicMaintenanceMultipliers(payload.sex, ageVal);
+
+  const maintenanceCalories = round(maintenanceBaseline * demo.combinedMultiplier);
   const calorieTarget = calculateCalorieTarget(
     maintenanceCalories,
     payload.goal,
@@ -310,6 +364,12 @@ function hydrateClient(payload) {
 
   return {
     ...payload,
+    sex: normalizeSex(payload.sex),
+    age: payload.age ?? null,
+    maintenanceBaselineCalories: maintenanceBaseline,
+    demographicSexMultiplier: demo.sexMultiplier,
+    demographicAgeMultiplier: demo.ageMultiplier,
+    demographicMultiplier: demo.combinedMultiplier,
     trainingDaysPerWeek,
     totalHeightInches,
     maintenanceCalories,
@@ -350,6 +410,7 @@ function normalizeClientRecord(id, data) {
   return hydrateClient({
     ...data,
     _id: id,
+    sex: data.sex,
     age: data.age ?? null,
     trainingDaysPerWeek: data.trainingDaysPerWeek ?? 5,
     fatPercent: data.fatPercent ?? 25,
@@ -410,8 +471,14 @@ function Dashboard() {
     if (!parsedWeight || parsedWeight <= 0) {
       return 0;
     }
-    return Math.round(parsedWeight * Number(formData.activityMultiplier));
-  }, [formData.weight, formData.activityMultiplier]);
+    const base = baselineMaintenanceCalories(parsedWeight, Number(formData.activityMultiplier));
+    let ageForDemo = null;
+    if (formData.age !== "" && formData.age != null && Number.isFinite(Number(formData.age))) {
+      ageForDemo = Number(formData.age);
+    }
+    const { combinedMultiplier } = demographicMaintenanceMultipliers(formData.sex || null, ageForDemo);
+    return round(base * combinedMultiplier);
+  }, [formData.weight, formData.activityMultiplier, formData.sex, formData.age]);
 
   const targetPreview = useMemo(() => {
     if (!maintenancePreview) {
@@ -517,10 +584,17 @@ function Dashboard() {
     setIsSubmitting(true);
 
     try {
+      const sexNorm = normalizeSex(formData.sex);
+      if (!sexNorm) {
+        setError("Choose sex (male or female) for maintenance calories.");
+        setIsSubmitting(false);
+        return;
+      }
       const now = new Date().toISOString();
       const payload = {
         name: formData.name.trim(),
         weight: Number(formData.weight),
+        sex: sexNorm,
         age: toNullableNumber(formData.age),
         heightFeet: Number(formData.heightFeet),
         heightInchesPart: Number(formData.heightInchesPart),
@@ -607,13 +681,29 @@ function Dashboard() {
             </label>
           </div>
           <label>
-            Age (optional)
+            Sex
+            <select
+              name="sex"
+              required
+              value={formData.sex}
+              onChange={handleChange}
+            >
+              {sexStoredValues.map((opt) => (
+                <option key={opt.label} value={opt.value} disabled={opt.value === ""}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Age (recommended for accuracy; optional)
             <input
               name="age"
               value={formData.age}
               onChange={handleChange}
               type="number"
-              min="1"
+              min="14"
+              max="100"
             />
           </label>
           <label>
@@ -725,7 +815,10 @@ function Dashboard() {
           </label>
           <div className="preview-card">
             <strong>Preview</strong>
-            <p>Maintenance: {maintenancePreview || "-"} kcal/day</p>
+            <p>
+              Maintenance: {maintenancePreview || "-"} kcal/day{" "}
+              <span className="muted-text">(baseline weight × activity, adjusted for sex &amp; age)</span>
+            </p>
             <p>
               Target (weekly average): {targetPreview || "-"} kcal/day — weekly budget{" "}
               {trainRestSplitPreview ? trainRestSplitPreview.weeklyCalorieBudget : "(—)"} kcal
@@ -806,6 +899,8 @@ function ClientProfile() {
     weight: "",
     heightFeet: "",
     heightInchesPart: "",
+    sex: "",
+    age: "",
     activityMultiplier: 15,
     goal: "Maintenance",
     fatPercent: 25,
@@ -834,6 +929,8 @@ function ClientProfile() {
       weight: data.weight ?? "",
       heightFeet: data.heightFeet ?? "",
       heightInchesPart: data.heightInchesPart ?? "",
+      sex: normalizeSex(data.sex) ?? "",
+      age: data.age ?? "",
       activityMultiplier: data.activityMultiplier ?? 15,
       goal: data.goal ?? "Maintenance",
       fatPercent: data.fatPercent ?? 25,
@@ -863,6 +960,8 @@ function ClientProfile() {
           weight: data.weight ?? "",
           heightFeet: data.heightFeet ?? "",
           heightInchesPart: data.heightInchesPart ?? "",
+          sex: normalizeSex(data.sex) ?? "",
+          age: data.age ?? "",
           activityMultiplier: data.activityMultiplier ?? 15,
           goal: data.goal ?? "Maintenance",
           fatPercent: data.fatPercent ?? 25,
@@ -891,10 +990,17 @@ function ClientProfile() {
     setError("");
     setSavedMessage("");
     try {
+      const sexNorm = normalizeSex(formData.sex);
+      if (!sexNorm) {
+        setError("Select sex (male or female) before saving.");
+        return;
+      }
       await updateDoc(doc(db, "clients", id), {
         weight: Number(formData.weight),
         heightFeet: Number(formData.heightFeet),
         heightInchesPart: Number(formData.heightInchesPart),
+        sex: sexNorm,
+        age: toNullableNumber(formData.age),
         activityMultiplier: Number(formData.activityMultiplier),
         goal: formData.goal,
         fatPercent: Number(formData.fatPercent || 25),
@@ -980,7 +1086,11 @@ function ClientProfile() {
             <strong>Weight:</strong> {client.weight} lbs
           </p>
           <p>
-            <strong>Age:</strong> {client.age || "-"}
+            <strong>Sex:</strong>{" "}
+            {client.sex === "male" ? "Male" : client.sex === "female" ? "Female" : "Not set"}
+          </p>
+          <p>
+            <strong>Age:</strong> {client.age != null ? client.age : "(not specified)"}
           </p>
           <p>
             <strong>Height:</strong> {client.heightFeet} ft {client.heightInchesPart} in
@@ -992,7 +1102,15 @@ function ClientProfile() {
             <strong>Activity Multiplier:</strong> {client.activityMultiplier}
           </p>
           <p>
-            <strong>Maintenance Calories:</strong> {client.maintenanceCalories} kcal
+            <strong>Maintenance baseline:</strong> {client.maintenanceBaselineCalories ?? "—"} kcal/day{" "}
+            <span className="muted-text">(bodyweight × activity)</span>
+          </p>
+          <p>
+            <strong>Adjusted maintenance:</strong> {client.maintenanceCalories} kcal/day{" "}
+            <span className="muted-text">
+              (scaled × {client.demographicMultiplier?.toFixed(3) ?? "1.000"} vs baseline for sex
+              &amp; age when provided)
+            </span>
           </p>
           <p>
             <strong>Calorie Target:</strong> {client.calorieTarget} kcal/day average ({client.weeklyCalorieBudget}{" "}
@@ -1105,6 +1223,39 @@ function ClientProfile() {
               />
             </label>
           </div>
+          <label>
+            Sex
+            <select
+              required
+              name="sex"
+              value={formData.sex === "" ? "" : normalizeSex(formData.sex) ?? ""}
+              onChange={(event) =>
+                setFormData((prev) => ({ ...prev, sex: event.target.value }))
+              }
+            >
+              {sexStoredValues.map((opt) => (
+                <option key={opt.label} value={opt.value} disabled={opt.value === ""}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Age <span className="muted-text">(optional; improves adjustment)</span>
+            <input
+              name="age"
+              type="number"
+              min="14"
+              max="100"
+              value={formData.age === null || formData.age === undefined ? "" : formData.age}
+              onChange={(event) =>
+                setFormData((prev) => ({
+                  ...prev,
+                  age: event.target.value === "" ? "" : Number(event.target.value),
+                }))
+              }
+            />
+          </label>
           <label>
             Activity multiplier
             <select
