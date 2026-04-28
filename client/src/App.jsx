@@ -30,6 +30,7 @@ const defaultFormState = {
   age: "",
   activityMultiplier: 15,
   goal: "Maintenance",
+  trainingDaysPerWeek: 5,
   fatPercent: 25,
   overrideCalorieTarget: "",
   overrideProteinGrams: "",
@@ -100,6 +101,112 @@ function getProteinReferenceWeight(weightLbs, totalHeightInches) {
     bmi: Number(bmi.toFixed(1)),
     referenceWeight: round(referenceWeight),
     referenceMethod,
+  };
+}
+
+/**
+ * Split weekly calorie budget into training-day and rest-day targets so the weekly
+ * sum matches calorieTarget × 7 while keeping the averaged daily calorie line (goal) unchanged.
+ * Protein stays equal every day — variation is mostly via carbs vs rest-day calories.
+ */
+function clampTrainingDays(raw) {
+  const n = Math.round(Number(raw));
+  if (!Number.isFinite(n)) {
+    return 5;
+  }
+  return Math.min(7, Math.max(1, n));
+}
+
+function computeTrainingRestDaysCalories(calorieTarget, trainingDaysPerWeek) {
+  const D = round(Number(calorieTarget));
+  const weeklyTotal = D * 7;
+  const nTrain = clampTrainingDays(trainingDaysPerWeek);
+  const nRest = 7 - nTrain;
+
+  if (nTrain === 7) {
+    return {
+      weeklyCalorieBudget: weeklyTotal,
+      trainingDaysPerWeek: nTrain,
+      restDaysPerWeek: 0,
+      trainDayCalories: D,
+      restDayCalories: D,
+    };
+  }
+
+  const preferredTrain =
+    D + Math.min(250, Math.max(50, Math.round(D * 0.08)));
+
+  /** Integer train/rest kcal/day with N*T + R*r = weeklyTotal (exact weekly alignment). */
+  let bestTrain = null;
+  let bestRest = null;
+  let bestScore = Infinity;
+
+  const ceilSearch = Math.min(Math.floor(weeklyTotal / nTrain), preferredTrain + 200);
+  const floorSearch = Math.max(D + 5, preferredTrain - 350);
+
+  for (let trainCal = ceilSearch; trainCal >= floorSearch; trainCal--) {
+    const residue = weeklyTotal - trainCal * nTrain;
+    if (residue <= 0) {
+      continue;
+    }
+    if (residue % nRest !== 0) {
+      continue;
+    }
+    const restCal = residue / nRest;
+    if (restCal < 200 || restCal >= trainCal) {
+      continue;
+    }
+
+    const score = Math.abs(trainCal - preferredTrain);
+    if (score < bestScore) {
+      bestScore = score;
+      bestTrain = trainCal;
+      bestRest = restCal;
+      if (score === 0) {
+        break;
+      }
+    }
+  }
+
+  if (bestTrain === null) {
+    for (let trainCal = Math.floor(weeklyTotal / nTrain); trainCal >= D; trainCal -= 1) {
+      const residue = weeklyTotal - trainCal * nTrain;
+      if (residue <= 0 || residue % nRest !== 0) {
+        continue;
+      }
+      const restCal = residue / nRest;
+      if (restCal < 200 || restCal >= trainCal) {
+        continue;
+      }
+      bestTrain = trainCal;
+      bestRest = restCal;
+      break;
+    }
+  }
+
+  const trainDayCalories = Math.round(bestTrain ?? D);
+  const restDayCalories = Math.round(bestRest ?? D);
+
+  return {
+    weeklyCalorieBudget: weeklyTotal,
+    trainingDaysPerWeek: nTrain,
+    restDaysPerWeek: nRest,
+    trainDayCalories,
+    restDayCalories,
+  };
+}
+
+function computeMacrosForDailyCalories(dailyCalories, proteinGrams, fatPercent) {
+  const proteinCalories = proteinGrams * 4;
+  const fatCalories = Math.round(Number(dailyCalories) * (Number(fatPercent) / 100));
+  const fatGrams = round(fatCalories / 9);
+  const carbCalories = Math.max(Number(dailyCalories) - proteinCalories - fatCalories, 0);
+  const carbGrams = round(carbCalories / 4);
+  return {
+    calories: Math.round(Number(dailyCalories)),
+    proteinGrams: Math.round(Number(proteinGrams)),
+    fatGrams,
+    carbGrams,
   };
 }
 
@@ -174,13 +281,28 @@ function hydrateClient(payload) {
     payload.overrideCalorieTarget
   );
 
+  const trainingDaysPerWeek = clampTrainingDays(
+    payload.trainingDaysPerWeek !== undefined ? payload.trainingDaysPerWeek : 5
+  );
+
+  const split = computeTrainingRestDaysCalories(calorieTarget, trainingDaysPerWeek);
+
   const proteinData = getProteinReferenceWeight(payload.weight, totalHeightInches);
   const autoProteinGrams = round(proteinData.referenceWeight);
   const fatPercent = Number(payload.fatPercent || 25);
-  const fatCalories = round(calorieTarget * (fatPercent / 100));
-  const autoFatGrams = round(fatCalories / 9);
+
+  const effectiveProtein =
+    payload.overrideProteinGrams !== null && payload.overrideProteinGrams !== undefined
+      ? round(payload.overrideProteinGrams)
+      : autoProteinGrams;
+
+  const trainMacrosAuto = computeMacrosForDailyCalories(split.trainDayCalories, effectiveProtein, fatPercent);
+  const restMacrosAuto = computeMacrosForDailyCalories(split.restDayCalories, effectiveProtein, fatPercent);
+
+  const aveFatCalories = round(calorieTarget * (fatPercent / 100));
+  const autoFatGrams = round(aveFatCalories / 9);
   const autoCarbGrams = Math.max(
-    round((calorieTarget - autoProteinGrams * 4 - fatCalories) / 4),
+    round((calorieTarget - effectiveProtein * 4 - aveFatCalories) / 4),
     0
   );
 
@@ -188,16 +310,22 @@ function hydrateClient(payload) {
 
   return {
     ...payload,
+    trainingDaysPerWeek,
     totalHeightInches,
     maintenanceCalories,
     calorieTarget,
+    weeklyCalorieBudget: split.weeklyCalorieBudget,
+    trainDayCalories: split.trainDayCalories,
+    restDayCalories: split.restDayCalories,
+    restDaysPerWeek: split.restDaysPerWeek,
+
+    trainDayMacros: trainMacrosAuto,
+    restDayMacros: restMacrosAuto,
+
     autoProteinGrams,
     autoFatGrams,
     autoCarbGrams,
-    proteinGrams:
-      payload.overrideProteinGrams !== null && payload.overrideProteinGrams !== undefined
-        ? round(payload.overrideProteinGrams)
-        : autoProteinGrams,
+    proteinGrams: effectiveProtein,
     fatGrams:
       payload.overrideFatGrams !== null && payload.overrideFatGrams !== undefined
         ? round(payload.overrideFatGrams)
@@ -206,6 +334,10 @@ function hydrateClient(payload) {
       payload.overrideCarbGrams !== null && payload.overrideCarbGrams !== undefined
         ? round(payload.overrideCarbGrams)
         : autoCarbGrams,
+    trainDayFatGrams: trainMacrosAuto.fatGrams,
+    trainDayCarbGrams: trainMacrosAuto.carbGrams,
+    restDayFatGrams: restMacrosAuto.fatGrams,
+    restDayCarbGrams: restMacrosAuto.carbGrams,
     bmi: proteinData.bmi,
     proteinReferenceWeight: proteinData.referenceWeight,
     proteinReferenceMethod: proteinData.referenceMethod,
@@ -219,6 +351,7 @@ function normalizeClientRecord(id, data) {
     ...data,
     _id: id,
     age: data.age ?? null,
+    trainingDaysPerWeek: data.trainingDaysPerWeek ?? 5,
     fatPercent: data.fatPercent ?? 25,
     overrideCalorieTarget: data.overrideCalorieTarget ?? null,
     overrideProteinGrams: data.overrideProteinGrams ?? null,
@@ -284,6 +417,9 @@ function Dashboard() {
     if (!maintenancePreview) {
       return 0;
     }
+    if (formData.overrideCalorieTarget !== "" && Number.isFinite(Number(formData.overrideCalorieTarget))) {
+      return Math.round(Number(formData.overrideCalorieTarget));
+    }
     if (formData.goal === "Cut") {
       return maintenancePreview - 400;
     }
@@ -291,7 +427,7 @@ function Dashboard() {
       return maintenancePreview + 350;
     }
     return maintenancePreview;
-  }, [maintenancePreview, formData.goal]);
+  }, [maintenancePreview, formData.goal, formData.overrideCalorieTarget]);
 
   const macroPreview = useMemo(() => {
     if (!targetPreview || !formData.weight) {
@@ -323,6 +459,34 @@ function Dashboard() {
     targetPreview,
   ]);
 
+  const trainRestSplitPreview = useMemo(() => {
+    if (!targetPreview || !formData.weight) {
+      return null;
+    }
+    const split = computeTrainingRestDaysCalories(targetPreview, formData.trainingDaysPerWeek ?? 5);
+    const tin =
+      Number(formData.heightFeet || 0) * 12 + Number(formData.heightInchesPart || 0);
+    const protBase = getProteinReferenceWeight(Number(formData.weight), tin).referenceWeight;
+    const proteinGm =
+      formData.overrideProteinGrams !== "" && Number(formData.overrideProteinGrams) >= 0
+        ? Number(formData.overrideProteinGrams)
+        : protBase;
+    const fp = Number(formData.fatPercent || 25);
+    return {
+      ...split,
+      trainMacros: computeMacrosForDailyCalories(split.trainDayCalories, proteinGm, fp),
+      restMacros: computeMacrosForDailyCalories(split.restDayCalories, proteinGm, fp),
+    };
+  }, [
+    targetPreview,
+    formData.weight,
+    formData.heightFeet,
+    formData.heightInchesPart,
+    formData.fatPercent,
+    formData.overrideProteinGrams,
+    formData.trainingDaysPerWeek,
+  ]);
+
   const handleChange = (event) => {
     const { name, value } = event.target;
     setFormData((prev) => ({
@@ -334,6 +498,7 @@ function Dashboard() {
         "age",
         "activityMultiplier",
         "fatPercent",
+        "trainingDaysPerWeek",
         "overrideCalorieTarget",
         "overrideProteinGrams",
         "overrideFatGrams",
@@ -361,6 +526,7 @@ function Dashboard() {
         heightInchesPart: Number(formData.heightInchesPart),
         activityMultiplier: Number(formData.activityMultiplier),
         goal: formData.goal,
+        trainingDaysPerWeek: clampTrainingDays(formData.trainingDaysPerWeek ?? 5),
         customPlan: formData.customPlan || "",
         notes: formData.notes || "",
         fatPercent: Number(formData.fatPercent || 25),
@@ -475,6 +641,17 @@ function Dashboard() {
             </select>
           </label>
           <label>
+            Training / high-activity days per week (1–7)
+            <input
+              name="trainingDaysPerWeek"
+              type="number"
+              min="1"
+              max="7"
+              value={formData.trainingDaysPerWeek}
+              onChange={handleChange}
+            />
+          </label>
+          <label>
             Fat % for macro calculation
             <input
               name="fatPercent"
@@ -549,10 +726,39 @@ function Dashboard() {
           <div className="preview-card">
             <strong>Preview</strong>
             <p>Maintenance: {maintenancePreview || "-"} kcal/day</p>
-            <p>Target: {targetPreview || "-"} kcal/day</p>
-            <p>Protein: {macroPreview.protein || "-"} g</p>
-            <p>Fats: {macroPreview.fat || "-"} g</p>
-            <p>Carbs: {macroPreview.carbs || "-"} g</p>
+            <p>
+              Target (weekly average): {targetPreview || "-"} kcal/day — weekly budget{" "}
+              {trainRestSplitPreview ? trainRestSplitPreview.weeklyCalorieBudget : "(—)"} kcal
+            </p>
+            {trainRestSplitPreview && trainRestSplitPreview.trainingDaysPerWeek < 7 && (
+              <>
+                <p className="muted-text" style={{ marginTop: "0.5rem" }}>
+                  Cycling: {trainRestSplitPreview.trainingDaysPerWeek} train @{" "}
+                  {trainRestSplitPreview.trainDayCalories} kcal / {trainRestSplitPreview.restDaysPerWeek}{" "}
+                  rest @ {trainRestSplitPreview.restDayCalories} kcal (sums to same weekly surplus/deficit
+                  line as {(trainRestSplitPreview.weeklyCalorieBudget / 7).toFixed(0)} kcal/day average).
+                </p>
+                <p style={{ marginTop: "0.35rem" }}>
+                  <strong>Training day</strong> — P {trainRestSplitPreview.trainMacros.proteinGrams} g · F{" "}
+                  {trainRestSplitPreview.trainMacros.fatGrams} g · C {trainRestSplitPreview.trainMacros.carbGrams}{" "}
+                  g
+                </p>
+                <p>
+                  <strong>Rest day</strong> — P {trainRestSplitPreview.restMacros.proteinGrams} g · F{" "}
+                  {trainRestSplitPreview.restMacros.fatGrams} g · C {trainRestSplitPreview.restMacros.carbGrams} g
+                </p>
+              </>
+            )}
+            {trainRestSplitPreview && trainRestSplitPreview.trainingDaysPerWeek >= 7 && (
+              <p className="muted-text" style={{ marginTop: "0.35rem" }}>
+                All seven days treated as training — single daily target ({trainRestSplitPreview.trainDayCalories}{" "}
+                kcal).
+              </p>
+            )}
+            <p style={{ marginTop: "0.75rem" }}>
+              Average-day macros (baseline): Protein {macroPreview.protein || "-"} g · Fat {macroPreview.fat || "-"}{" "}
+              g · Carb {macroPreview.carbs || "-"} g
+            </p>
           </div>
           <button disabled={isSubmitting} type="submit">
             {isSubmitting ? "Creating..." : "Create Client"}
@@ -572,7 +778,16 @@ function Dashboard() {
                 <Link to={`/clients/${client._id}`}>
                   <strong>{client.name}</strong>
                   <span>{client.goal}</span>
-                  <span>{client.calorieTarget} kcal/day</span>
+                  <span>
+                    {client.trainDayCalories !== client.restDayCalories ? (
+                      <>
+                        Train {client.trainDayCalories} · Rest {client.restDayCalories}
+                        kcal/day
+                      </>
+                    ) : (
+                      <>{client.calorieTarget} kcal/day avg</>
+                    )}
+                  </span>
                 </Link>
               </li>
             ))}
@@ -594,6 +809,7 @@ function ClientProfile() {
     activityMultiplier: 15,
     goal: "Maintenance",
     fatPercent: 25,
+    trainingDaysPerWeek: 5,
     overrideCalorieTarget: "",
     overrideProteinGrams: "",
     overrideFatGrams: "",
@@ -621,6 +837,7 @@ function ClientProfile() {
       activityMultiplier: data.activityMultiplier ?? 15,
       goal: data.goal ?? "Maintenance",
       fatPercent: data.fatPercent ?? 25,
+      trainingDaysPerWeek: data.trainingDaysPerWeek ?? 5,
       overrideCalorieTarget: data.overrideCalorieTarget ?? "",
       overrideProteinGrams: data.overrideProteinGrams ?? "",
       overrideFatGrams: data.overrideFatGrams ?? "",
@@ -649,6 +866,7 @@ function ClientProfile() {
           activityMultiplier: data.activityMultiplier ?? 15,
           goal: data.goal ?? "Maintenance",
           fatPercent: data.fatPercent ?? 25,
+          trainingDaysPerWeek: data.trainingDaysPerWeek ?? 5,
           overrideCalorieTarget: data.overrideCalorieTarget ?? "",
           overrideProteinGrams: data.overrideProteinGrams ?? "",
           overrideFatGrams: data.overrideFatGrams ?? "",
@@ -680,6 +898,7 @@ function ClientProfile() {
         activityMultiplier: Number(formData.activityMultiplier),
         goal: formData.goal,
         fatPercent: Number(formData.fatPercent || 25),
+        trainingDaysPerWeek: clampTrainingDays(formData.trainingDaysPerWeek ?? 5),
         overrideCalorieTarget: toNullableNumber(formData.overrideCalorieTarget),
         overrideProteinGrams: toNullableNumber(formData.overrideProteinGrams),
         overrideFatGrams: toNullableNumber(formData.overrideFatGrams),
@@ -776,8 +995,32 @@ function ClientProfile() {
             <strong>Maintenance Calories:</strong> {client.maintenanceCalories} kcal
           </p>
           <p>
-            <strong>Calorie Target:</strong> {client.calorieTarget} kcal
+            <strong>Calorie Target:</strong> {client.calorieTarget} kcal/day average ({client.weeklyCalorieBudget}{" "}
+            kcal / week)
           </p>
+          {client.trainingDaysPerWeek >= 7 || client.trainDayCalories === client.restDayCalories ? (
+            <p>
+              <strong>Weekly calorie split:</strong> All days equal at {client.calorieTarget} kcal (no cycling).
+            </p>
+          ) : (
+            <>
+              <p>
+                <strong>Training / rest split:</strong> {client.trainingDaysPerWeek} training day
+                {client.trainingDaysPerWeek !== 1 ? "s" : ""} @ {client.trainDayCalories} kcal ·{" "}
+                {client.restDaysPerWeek} rest day
+                {client.restDaysPerWeek !== 1 ? "s" : ""} @ {client.restDayCalories} kcal
+              </p>
+              <p>
+                <strong>Training day macros:</strong> P {client.trainDayMacros?.proteinGrams ?? "-"} · F{" "}
+                {client.trainDayMacros?.fatGrams ?? "-"} · C {client.trainDayMacros?.carbGrams ?? "-"} g · same
+                protein every day · higher carbs on training for fueling / recovery.
+              </p>
+              <p>
+                <strong>Rest day macros:</strong> P {client.restDayMacros?.proteinGrams ?? "-"} · F{" "}
+                {client.restDayMacros?.fatGrams ?? "-"} · C {client.restDayMacros?.carbGrams ?? "-"} g
+              </p>
+            </>
+          )}
           <p>
             <strong>BMI:</strong> {client.bmi}
           </p>
@@ -899,6 +1142,23 @@ function ClientProfile() {
                 </option>
               ))}
             </select>
+          </label>
+          <label>
+            Training / high-activity days per week (1–7)
+            <input
+              name="trainingDaysPerWeek"
+              type="number"
+              min="1"
+              max="7"
+              value={formData.trainingDaysPerWeek}
+              onChange={(event) =>
+                setFormData((prev) => ({
+                  ...prev,
+                  trainingDaysPerWeek:
+                    event.target.value === "" ? "" : Number(event.target.value),
+                }))
+              }
+            />
           </label>
           <label>
             Fat % for macro calculation
