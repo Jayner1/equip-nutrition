@@ -22,34 +22,61 @@ const activityOptions = [
 
 const goals = ["Cut", "Bulk", "Maintenance"];
 
-/** Coach-selected metabolic leaning → protein blend toward goal weight & light maintenance tweak */
+/** 1 = very lean, 7 = extreme obesity tier (stored as digits in Firestore) */
 const metabolicAdjustmentOptions = [
   { value: "", label: "Not specified (neutral)" },
-  { value: "very_lean", label: "Very lean" },
-  { value: "lean", label: "Lean" },
-  { value: "athletic", label: "Athletic" },
-  { value: "fitness", label: "Fitness-oriented" },
-  { value: "average", label: "Moderate — average build" },
-  { value: "above_average", label: "Higher body mass — soft tissue" },
-  { value: "high", label: "Heavier build emphasis" },
+  ...Array.from({ length: 7 }, (_, idx) => {
+    const n = String(idx + 1);
+    return { value: n, label: n };
+  }),
 ];
 
-/** 0 = full bodyweight tilt; 1 = max blend toward BMI-24.9 goal weight */
+/** Maps old string keys saved before tier 1–7 to current tiers */
+const LEGACY_METABOLIC_TIER = {
+  very_lean: "1",
+  lean: "2",
+  athletic: "3",
+  fitness: "4",
+  average: "5",
+  above_average: "6",
+  high: "7",
+};
+
+/** Normalize to "" or "1"–"7" for stable math & UI */
+function normalizeMetabolicTier(raw) {
+  if (raw === null || raw === undefined || raw === "") {
+    return "";
+  }
+  if (typeof raw === "number" && Number.isFinite(raw)) {
+    const n = Math.round(raw);
+    if (n >= 1 && n <= 7) {
+      return String(n);
+    }
+    return "";
+  }
+  const s = String(raw).trim();
+  if (/^[1-7]$/.test(s)) {
+    return s;
+  }
+  return LEGACY_METABOLIC_TIER[s] ?? "";
+}
+
+/** 0 = full bodyweight tilt; 7 = max blend toward BMI-24.9 goal weight tier */
 function proteinBlendFromEstimatedBodyFat(key) {
-  switch (String(key ?? "")) {
-    case "very_lean":
+  switch (normalizeMetabolicTier(key)) {
+    case "1":
       return 0.05;
-    case "lean":
+    case "2":
       return 0.12;
-    case "athletic":
+    case "3":
       return 0.22;
-    case "fitness":
+    case "4":
       return 0.35;
-    case "average":
+    case "5":
       return 0.48;
-    case "above_average":
+    case "6":
       return 0.62;
-    case "high":
+    case "7":
       return 0.75;
     default:
       return 0;
@@ -58,20 +85,20 @@ function proteinBlendFromEstimatedBodyFat(key) {
 
 /** Capped refinement on maintenance (~±3% from mid; total spread within ~6%) */
 function maintenanceMultiplierFromEstimatedBodyFat(key) {
-  switch (String(key ?? "")) {
-    case "very_lean":
+  switch (normalizeMetabolicTier(key)) {
+    case "1":
       return 1.03;
-    case "lean":
+    case "2":
       return 1.02;
-    case "athletic":
+    case "3":
       return 1.01;
-    case "fitness":
+    case "4":
       return 1;
-    case "average":
+    case "5":
       return 0.99;
-    case "above_average":
+    case "6":
       return 0.975;
-    case "high":
+    case "7":
       return 0.96;
     default:
       return 1;
@@ -79,8 +106,8 @@ function maintenanceMultiplierFromEstimatedBodyFat(key) {
 }
 
 function labelForMetabolicAdjustment(key) {
-  const row = metabolicAdjustmentOptions.find((o) => o.value === String(key ?? ""));
-  return row ? row.label : "—";
+  const t = normalizeMetabolicTier(key);
+  return t === "" ? "—" : t;
 }
 
 /** Coach-only slider 0–100: low → ~0.85×, neutral 75 → 1.0×, high → ~1.05× maintenance only; unset in DB → ×1 */
@@ -511,7 +538,8 @@ function hydrateClient(payload) {
       : null;
   const maintenanceBaseline = baselineMaintenanceCalories(payload.weight, payload.activityMultiplier);
   const demo = demographicMaintenanceMultipliers(payload.sex, ageVal);
-  const bfMaintMult = maintenanceMultiplierFromEstimatedBodyFat(payload.estimatedBodyFatEstimate);
+  const metabolicTier = normalizeMetabolicTier(payload.estimatedBodyFatEstimate);
+  const bfMaintMult = maintenanceMultiplierFromEstimatedBodyFat(metabolicTier);
   const physiqueMaintMult = physiqueMaintenanceMultiplierFromScore(payload.physiqueScore);
 
   const maintenanceCalories = round(
@@ -532,7 +560,7 @@ function hydrateClient(payload) {
   const proteinData = getProteinReferenceWeightWithBodyFatEstimate(
     payload.weight,
     totalHeightInches,
-    payload.estimatedBodyFatEstimate
+    metabolicTier
   );
   const autoProteinGrams = round(proteinData.referenceWeight);
   const fatPercent = Number(payload.fatPercent || 25);
@@ -569,9 +597,7 @@ function hydrateClient(payload) {
         : clampPhysiqueScore(payload.physiqueScore),
     physiqueMaintenanceMultiplier: physiqueMaintMult,
     bodyFatProteinBlend: proteinData.bodyFatProteinBlend ?? 0,
-    estimatedBodyFatEstimate: payload.estimatedBodyFatEstimate
-      ? String(payload.estimatedBodyFatEstimate)
-      : null,
+    estimatedBodyFatEstimate: metabolicTier === "" ? null : metabolicTier,
     trainingDaysPerWeek,
     totalHeightInches,
     maintenanceCalories,
@@ -681,7 +707,9 @@ function Dashboard() {
       ageForDemo = Number(formData.age);
     }
     const { combinedMultiplier } = demographicMaintenanceMultipliers(formData.sex || null, ageForDemo);
-    const bfMaint = maintenanceMultiplierFromEstimatedBodyFat(formData.estimatedBodyFatEstimate);
+    const bfMaint = maintenanceMultiplierFromEstimatedBodyFat(
+      normalizeMetabolicTier(formData.estimatedBodyFatEstimate)
+    );
     return round(base * combinedMultiplier * bfMaint);
   }, [
     formData.weight,
@@ -820,8 +848,10 @@ function Dashboard() {
         activityMultiplier: Number(formData.activityMultiplier),
         goal: formData.goal,
         trainingDaysPerWeek: clampTrainingDays(formData.trainingDaysPerWeek ?? 5),
-        estimatedBodyFatEstimate:
-          formData.estimatedBodyFatEstimate === "" ? null : formData.estimatedBodyFatEstimate,
+        estimatedBodyFatEstimate: (() => {
+          const tier = normalizeMetabolicTier(formData.estimatedBodyFatEstimate);
+          return tier === "" ? null : tier;
+        })(),
         customPlan: formData.customPlan || "",
         notes: formData.notes || "",
         fatPercent: Number(formData.fatPercent || 25),
@@ -986,6 +1016,7 @@ function Dashboard() {
                 </option>
               ))}
             </select>
+            <span className="muted-text">1 = leanest tier · 7 = highest tier</span>
           </label>
           <label>
             Override calorie target (optional)
@@ -1185,7 +1216,7 @@ function ClientProfile() {
       goal: data.goal ?? "Maintenance",
       fatPercent: data.fatPercent ?? 25,
       trainingDaysPerWeek: data.trainingDaysPerWeek ?? 5,
-      estimatedBodyFatEstimate: data.estimatedBodyFatEstimate ?? "",
+      estimatedBodyFatEstimate: normalizeMetabolicTier(data.estimatedBodyFatEstimate ?? ""),
       overrideCalorieTarget: data.overrideCalorieTarget ?? "",
       overrideProteinGrams: data.overrideProteinGrams ?? "",
       overrideFatGrams: data.overrideFatGrams ?? "",
@@ -1221,7 +1252,7 @@ function ClientProfile() {
           goal: data.goal ?? "Maintenance",
           fatPercent: data.fatPercent ?? 25,
           trainingDaysPerWeek: data.trainingDaysPerWeek ?? 5,
-          estimatedBodyFatEstimate: data.estimatedBodyFatEstimate ?? "",
+          estimatedBodyFatEstimate: normalizeMetabolicTier(data.estimatedBodyFatEstimate ?? ""),
           overrideCalorieTarget: data.overrideCalorieTarget ?? "",
           overrideProteinGrams: data.overrideProteinGrams ?? "",
           overrideFatGrams: data.overrideFatGrams ?? "",
@@ -1276,8 +1307,10 @@ function ClientProfile() {
         goal: formData.goal,
         fatPercent: Number(formData.fatPercent || 25),
         trainingDaysPerWeek: clampTrainingDays(formData.trainingDaysPerWeek ?? 5),
-        estimatedBodyFatEstimate:
-          formData.estimatedBodyFatEstimate === "" ? null : formData.estimatedBodyFatEstimate,
+        estimatedBodyFatEstimate: (() => {
+          const tier = normalizeMetabolicTier(formData.estimatedBodyFatEstimate);
+          return tier === "" ? null : tier;
+        })(),
         physiqueScore: clampPhysiqueScore(formData.physiqueScore),
         overrideCalorieTarget: toNullableNumber(formData.overrideCalorieTarget),
         overrideProteinGrams: toNullableNumber(formData.overrideProteinGrams),
@@ -1690,6 +1723,7 @@ function ClientProfile() {
                 </option>
               ))}
             </select>
+            <span className="muted-text">1 = leanest tier · 7 = highest tier</span>
           </label>
           <label>
             Override calorie target (optional)
