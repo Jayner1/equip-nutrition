@@ -54,6 +54,59 @@ const defaultCheckInState = {
   date: new Date().toISOString().split("T")[0],
 };
 
+const macroGuideTabs = [
+  { key: "protein", label: "Protein" },
+  { key: "carbs", label: "Carbs" },
+  { key: "fats", label: "Fats" },
+];
+
+const macroFoodGuide = {
+  protein: {
+    title: "Top Protein Foods",
+    topFoods: [
+      { name: "Chicken breast", serving: "4 oz cooked", macroGrams: "35 g protein" },
+      { name: "Nonfat Greek yogurt", serving: "1 cup", macroGrams: "23 g protein" },
+      { name: "Egg whites", serving: "1 cup", macroGrams: "26 g protein" },
+      { name: "Lean ground turkey (93/7)", serving: "4 oz cooked", macroGrams: "22 g protein" },
+      { name: "Tuna", serving: "1 can (5 oz drained)", macroGrams: "30 g protein" },
+    ],
+    vegetarianFoods: [
+      { name: "Low-fat cottage cheese", serving: "1 cup", macroGrams: "26 g protein" },
+      { name: "Eggs", serving: "2 whole eggs", macroGrams: "12 g protein" },
+      { name: "Skyr", serving: "1 cup", macroGrams: "20 g protein" },
+      { name: "Paneer (low-fat)", serving: "3 oz", macroGrams: "18 g protein" },
+      { name: "Tempeh", serving: "3 oz", macroGrams: "16 g protein" },
+    ],
+    veganFoods: [
+      { name: "Extra-firm tofu", serving: "4 oz", macroGrams: "14 g protein" },
+      { name: "Tempeh", serving: "3 oz", macroGrams: "16 g protein" },
+      { name: "Seitan", serving: "3 oz", macroGrams: "21 g protein" },
+      { name: "Edamame", serving: "1 cup shelled", macroGrams: "18 g protein" },
+      { name: "Lentils", serving: "1 cup cooked", macroGrams: "18 g protein" },
+    ],
+  },
+  carbs: {
+    title: "Top Carb Foods",
+    topFoods: [
+      { name: "Jasmine rice", serving: "1 cup cooked", macroGrams: "45 g carbs" },
+      { name: "Rolled oats", serving: "1/2 cup dry", macroGrams: "27 g carbs" },
+      { name: "Sweet potato", serving: "1 medium", macroGrams: "26 g carbs" },
+      { name: "Sourdough bread", serving: "2 slices", macroGrams: "34 g carbs" },
+      { name: "Banana", serving: "1 medium", macroGrams: "27 g carbs" },
+    ],
+  },
+  fats: {
+    title: "Top Fat Foods",
+    topFoods: [
+      { name: "Avocado", serving: "1/2 medium", macroGrams: "15 g fat" },
+      { name: "Extra-virgin olive oil", serving: "1 tbsp", macroGrams: "14 g fat" },
+      { name: "Almonds", serving: "1 oz", macroGrams: "14 g fat" },
+      { name: "Natural peanut butter", serving: "2 tbsp", macroGrams: "16 g fat" },
+      { name: "Chia seeds", serving: "2 tbsp", macroGrams: "9 g fat" },
+    ],
+  },
+};
+
 function round(value) {
   return Math.round(Number(value));
 }
@@ -917,6 +970,7 @@ function ClientProfile() {
   const [checkInForm, setCheckInForm] = useState(defaultCheckInState);
   const [checkInStatus, setCheckInStatus] = useState("");
   const [isDeleting, setIsDeleting] = useState(false);
+  const [activeMacroGuideTab, setActiveMacroGuideTab] = useState("protein");
 
   const loadClient = async () => {
     const snapshot = await getDoc(doc(db, "clients", id));
@@ -1073,6 +1127,22 @@ function ClientProfile() {
   if (!client) {
     return <p className="panel">Loading profile...</p>;
   }
+
+  const activeMacroGuide = macroFoodGuide[activeMacroGuideTab] ?? macroFoodGuide.protein;
+
+  const renderMacroFoodItems = (items) => (
+    <ul className="check-in-list">
+      {items.map((item) => (
+        <li key={`${item.name}-${item.serving}`}>
+          <div className="check-in-row">
+            <strong>{item.name}</strong>
+            <span>{item.macroGrams}</span>
+          </div>
+          {item.serving && <p className="muted-text">Serving: {item.serving}</p>}
+        </li>
+      ))}
+    </ul>
+  );
 
   return (
     <main className="profile-layout">
@@ -1424,6 +1494,43 @@ function ClientProfile() {
           {savedMessage && <p className="success-text">{savedMessage}</p>}
           {error && <p className="error-text">{error}</p>}
         </form>
+      </section>
+
+      <section className="panel">
+        <h2>Macro Food Guide</h2>
+        <p className="muted-text">
+          Quick food ideas matched to macro targets. Pick a macro to see top options.
+        </p>
+        <div className="inline-field-row" style={{ marginTop: "12px" }}>
+          {macroGuideTabs.map((tab) => (
+            <button
+              key={tab.key}
+              type="button"
+              className={activeMacroGuideTab === tab.key ? "" : "macro-tab-inactive"}
+              onClick={() => setActiveMacroGuideTab(tab.key)}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+
+        <div className="preview-card" style={{ marginTop: "12px" }}>
+          <strong>{activeMacroGuide.title}</strong>
+          {renderMacroFoodItems(activeMacroGuide.topFoods)}
+
+          {activeMacroGuideTab === "protein" && (
+            <>
+              <div style={{ marginTop: "12px" }}>
+                <strong>Vegetarian Protein Sources</strong>
+                {renderMacroFoodItems(macroFoodGuide.protein.vegetarianFoods)}
+              </div>
+              <div style={{ marginTop: "12px" }}>
+                <strong>Vegan Protein Sources</strong>
+                {renderMacroFoodItems(macroFoodGuide.protein.veganFoods)}
+              </div>
+            </>
+          )}
+        </div>
       </section>
 
       <section className="panel">

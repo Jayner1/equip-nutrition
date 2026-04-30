@@ -102,6 +102,10 @@ button {
   background: #b91c1c;
 }
 
+.macro-tab-inactive {
+  background: #475569;
+}
+
 button:disabled {
   background: #94a3b8;
   cursor: not-allowed;
