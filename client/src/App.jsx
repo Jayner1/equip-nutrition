@@ -10,7 +10,7 @@ import {
   updateDoc,
 } from "firebase/firestore";
 import { db } from "./firebase";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, Route, Routes, useNavigate, useParams } from "react-router-dom";
 const activityOptions = [
   { value: 14, label: "14 - Very inactive" },
@@ -81,6 +81,36 @@ function maintenanceMultiplierFromEstimatedBodyFat(key) {
 function labelForEstimatedBodyFat(key) {
   const row = estimatedBodyFatOptions.find((o) => o.value === String(key ?? ""));
   return row ? row.label : "—";
+}
+
+/** Coach-only slider 0–100: low → ~0.85×, neutral 75 → 1.0×, high → ~1.05× maintenance only; unset in DB → ×1 */
+const PHYSIQUE_SCORE_NEUTRAL = 75;
+
+function clampPhysiqueScore(n) {
+  const x = Math.round(Number(n));
+  if (!Number.isFinite(x)) {
+    return PHYSIQUE_SCORE_NEUTRAL;
+  }
+  return Math.min(100, Math.max(0, x));
+}
+
+function physiqueMaintenanceMultiplierFromScore(storedScore) {
+  if (storedScore === null || storedScore === undefined || storedScore === "") {
+    return 1;
+  }
+  const s = clampPhysiqueScore(storedScore);
+  return 0.85 + (s / 100) * (1.05 - 0.85);
+}
+
+function formatPhysiqueHint(score) {
+  const s = clampPhysiqueScore(score);
+  const mult = 0.85 + (s / 100) * (1.05 - 0.85);
+  const neutral = 0.85 + (PHYSIQUE_SCORE_NEUTRAL / 100) * (1.05 - 0.85);
+  const pctVsNeutral = ((mult - neutral) / neutral) * 100;
+  const rounded = mult.toFixed(3);
+  const pctStr =
+    Math.abs(pctVsNeutral) < 0.05 ? "at neutral" : `${pctVsNeutral >= 0 ? "+" : ""}${pctVsNeutral.toFixed(1)}% vs neutral`;
+  return { mult, rounded, pctStr };
 }
 
 function getProteinReferenceWeightWithBodyFatEstimate(weightLbs, totalHeightInches, estimateKey) {
@@ -480,8 +510,11 @@ function hydrateClient(payload) {
   const maintenanceBaseline = baselineMaintenanceCalories(payload.weight, payload.activityMultiplier);
   const demo = demographicMaintenanceMultipliers(payload.sex, ageVal);
   const bfMaintMult = maintenanceMultiplierFromEstimatedBodyFat(payload.estimatedBodyFatEstimate);
+  const physiqueMaintMult = physiqueMaintenanceMultiplierFromScore(payload.physiqueScore);
 
-  const maintenanceCalories = round(maintenanceBaseline * demo.combinedMultiplier * bfMaintMult);
+  const maintenanceCalories = round(
+    maintenanceBaseline * demo.combinedMultiplier * bfMaintMult * physiqueMaintMult
+  );
   const calorieTarget = calculateCalorieTarget(
     maintenanceCalories,
     payload.goal,
@@ -528,6 +561,11 @@ function hydrateClient(payload) {
     demographicAgeMultiplier: demo.ageMultiplier,
     demographicMultiplier: demo.combinedMultiplier,
     bodyFatMaintenanceMultiplier: bfMaintMult,
+    physiqueScore:
+      payload.physiqueScore === null || payload.physiqueScore === undefined
+        ? null
+        : clampPhysiqueScore(payload.physiqueScore),
+    physiqueMaintenanceMultiplier: physiqueMaintMult,
     bodyFatProteinBlend: proteinData.bodyFatProteinBlend ?? 0,
     estimatedBodyFatEstimate: payload.estimatedBodyFatEstimate
       ? String(payload.estimatedBodyFatEstimate)
@@ -574,6 +612,7 @@ function normalizeClientRecord(id, data) {
     _id: id,
     sex: data.sex,
     age: data.age ?? null,
+    physiqueScore: data.physiqueScore ?? null,
     estimatedBodyFatEstimate: data.estimatedBodyFatEstimate ?? null,
     trainingDaysPerWeek: data.trainingDaysPerWeek ?? 5,
     fatPercent: data.fatPercent ?? 25,
@@ -1106,6 +1145,7 @@ function ClientProfile() {
     overrideProteinGrams: "",
     overrideFatGrams: "",
     overrideCarbGrams: "",
+    physiqueScore: PHYSIQUE_SCORE_NEUTRAL,
     customPlan: "",
     notes: "",
   });
@@ -1115,6 +1155,16 @@ function ClientProfile() {
   const [checkInStatus, setCheckInStatus] = useState("");
   const [isDeleting, setIsDeleting] = useState(false);
   const [activeMacroGuideTab, setActiveMacroGuideTab] = useState("protein");
+  const [physiqueHintVisible, setPhysiqueHintVisible] = useState(false);
+  const physiqueHintTimerRef = useRef(null);
+
+  useEffect(() => {
+    return () => {
+      if (physiqueHintTimerRef.current) {
+        window.clearTimeout(physiqueHintTimerRef.current);
+      }
+    };
+  }, []);
 
   const loadClient = async () => {
     const snapshot = await getDoc(doc(db, "clients", id));
@@ -1138,6 +1188,10 @@ function ClientProfile() {
       overrideProteinGrams: data.overrideProteinGrams ?? "",
       overrideFatGrams: data.overrideFatGrams ?? "",
       overrideCarbGrams: data.overrideCarbGrams ?? "",
+      physiqueScore:
+        data.physiqueScore !== null && data.physiqueScore !== undefined
+          ? clampPhysiqueScore(data.physiqueScore)
+          : PHYSIQUE_SCORE_NEUTRAL,
       customPlan: data.customPlan || "",
       notes: data.notes || "",
     });
@@ -1170,6 +1224,10 @@ function ClientProfile() {
           overrideProteinGrams: data.overrideProteinGrams ?? "",
           overrideFatGrams: data.overrideFatGrams ?? "",
           overrideCarbGrams: data.overrideCarbGrams ?? "",
+          physiqueScore:
+            data.physiqueScore !== null && data.physiqueScore !== undefined
+              ? clampPhysiqueScore(data.physiqueScore)
+              : PHYSIQUE_SCORE_NEUTRAL,
           customPlan: data.customPlan || "",
           notes: data.notes || "",
         });
@@ -1184,6 +1242,17 @@ function ClientProfile() {
       isMounted = false;
     };
   }, [id]);
+
+  const flashPhysiqueHint = () => {
+    setPhysiqueHintVisible(true);
+    if (physiqueHintTimerRef.current) {
+      window.clearTimeout(physiqueHintTimerRef.current);
+    }
+    physiqueHintTimerRef.current = window.setTimeout(() => {
+      setPhysiqueHintVisible(false);
+      physiqueHintTimerRef.current = null;
+    }, 2200);
+  };
 
   const handleSave = async (event) => {
     event.preventDefault();
@@ -1207,6 +1276,7 @@ function ClientProfile() {
         trainingDaysPerWeek: clampTrainingDays(formData.trainingDaysPerWeek ?? 5),
         estimatedBodyFatEstimate:
           formData.estimatedBodyFatEstimate === "" ? null : formData.estimatedBodyFatEstimate,
+        physiqueScore: clampPhysiqueScore(formData.physiqueScore),
         overrideCalorieTarget: toNullableNumber(formData.overrideCalorieTarget),
         overrideProteinGrams: toNullableNumber(formData.overrideProteinGrams),
         overrideFatGrams: toNullableNumber(formData.overrideFatGrams),
@@ -1276,6 +1346,7 @@ function ClientProfile() {
     return <p className="panel">Loading profile...</p>;
   }
 
+  const physiqueFmt = formatPhysiqueHint(formData.physiqueScore);
   const activeMacroGuide = macroFoodGuide[activeMacroGuideTab] ?? macroFoodGuide.protein;
 
   const renderMacroFoodItems = (items) => (
@@ -1330,8 +1401,9 @@ function ClientProfile() {
           <p>
             <strong>Adjusted maintenance:</strong> {client.maintenanceCalories} kcal/day{" "}
             <span className="muted-text">
-              (baseline × sex/age × {client.demographicMultiplier?.toFixed(3) ?? "1.000"} × estimated body-fat tweak{" "}
-              {client.bodyFatMaintenanceMultiplier?.toFixed(3) ?? "1.000"}; light refinement only)
+              (baseline × sex/age × {client.demographicMultiplier?.toFixed(3) ?? "1.000"} × est. body-fat{" "}
+              {client.bodyFatMaintenanceMultiplier?.toFixed(3) ?? "1.000"} × physique adjustment{" "}
+              {client.physiqueMaintenanceMultiplier?.toFixed(3) ?? "1.000"}; protein unchanged)
             </span>
           </p>
           <p>
@@ -1402,6 +1474,53 @@ function ClientProfile() {
       <section className="panel">
         <h2>Coach Controls + Notes</h2>
         <form className="form-grid" onSubmit={handleSave}>
+          <details className="coach-metabolic-adjustment details-toggle">
+            <summary>Physique adjustment (coach only — metabolic)</summary>
+            <p className="muted-text coach-metabolic-explainer">
+              Visual estimate on metabolic efficiency affects maintenance calories only (~0.85–1.05×). Does not
+              change protein or macro percentages.
+            </p>
+            <label className="coach-slider-label">
+              <span
+                aria-live="polite"
+                className={physiqueHintVisible ? "coach-slider-hint is-visible" : "coach-slider-hint"}
+              >
+                ×{physiqueFmt.rounded} ({physiqueFmt.pctStr})
+              </span>
+              <span className="muted-text coach-slider-hint-caption">
+                {physiqueHintVisible ? "Adjusted" : "Drag to tune (maintenance calories only)"}
+              </span>
+              <input
+                type="range"
+                min={0}
+                max={100}
+                step={1}
+                value={clampPhysiqueScore(formData.physiqueScore)}
+                aria-label="Metabolic physique adjustment slider"
+                onChange={(event) => {
+                  const next = clampPhysiqueScore(event.target.value);
+                  setFormData((prev) => ({ ...prev, physiqueScore: next }));
+                  flashPhysiqueHint();
+                }}
+              />
+              <span className="muted-text coach-slider-ends">
+                Lower efficiency (~0.85×) · Neutral (~1.00× near middle) · Higher (~1.05×)
+              </span>
+              <button
+                className="coach-neutral-button"
+                type="button"
+                onClick={() => {
+                  setFormData((prev) => ({
+                    ...prev,
+                    physiqueScore: PHYSIQUE_SCORE_NEUTRAL,
+                  }));
+                  flashPhysiqueHint();
+                }}
+              >
+                Reset to neutral (~1×)
+              </button>
+            </label>
+          </details>
           <label>
             Current weight (lbs)
             <input

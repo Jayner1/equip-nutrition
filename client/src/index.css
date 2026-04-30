@@ -106,6 +106,66 @@ button {
   background: #475569;
 }
 
+.coach-metabolic-adjustment {
+  margin-bottom: 4px;
+  border: 1px dashed #b8cae4;
+  border-radius: 8px;
+  padding: 12px;
+  background: #f8fafc;
+}
+
+.coach-metabolic-adjustment summary {
+  cursor: pointer;
+  font-weight: 700;
+  color: #334155;
+}
+
+.coach-metabolic-explainer {
+  margin-top: 8px;
+  margin-bottom: 8px;
+}
+
+.coach-slider-label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-weight: 600;
+}
+
+.coach-slider-hint-caption {
+  min-height: 1.25em;
+}
+
+.coach-slider-hint {
+  display: inline-block;
+  opacity: 0;
+  transition: opacity 0.45s ease;
+  font-variant-numeric: tabular-nums;
+  color: #0f172a;
+}
+
+.coach-slider-hint.is-visible {
+  opacity: 1;
+}
+
+.coach-slider-label input[type="range"] {
+  width: 100%;
+}
+
+.coach-slider-ends {
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.coach-neutral-button {
+  align-self: flex-start;
+  margin-top: 4px;
+  background: #64748b;
+  font-weight: 600;
+  font-size: 13px;
+  padding: 8px 12px;
+}
+
 button:disabled {
   background: #94a3b8;
   cursor: not-allowed;
