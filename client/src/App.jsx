@@ -22,6 +22,104 @@ const activityOptions = [
 
 const goals = ["Cut", "Bulk", "Maintenance"];
 
+/** Optional coach visual estimate → protein blend toward goal weight & light maintenance tweak */
+const estimatedBodyFatOptions = [
+  { value: "", label: "Not specified (neutral)" },
+  { value: "very_lean", label: "~10–13% (very lean)" },
+  { value: "lean", label: "~14–17% (lean)" },
+  { value: "athletic", label: "~18–22% (athletic)" },
+  { value: "fitness", label: "~23–27% (fitness)" },
+  { value: "average", label: "~28–32% (average)" },
+  { value: "above_average", label: "~33–38% (above average)" },
+  { value: "high", label: "~39–45%+ (high)" },
+];
+
+/** 0 = full bodyweight tilt; 1 = max blend toward BMI-24.9 goal weight */
+function proteinBlendFromEstimatedBodyFat(key) {
+  switch (String(key ?? "")) {
+    case "very_lean":
+      return 0.05;
+    case "lean":
+      return 0.12;
+    case "athletic":
+      return 0.22;
+    case "fitness":
+      return 0.35;
+    case "average":
+      return 0.48;
+    case "above_average":
+      return 0.62;
+    case "high":
+      return 0.75;
+    default:
+      return 0;
+  }
+}
+
+/** Capped refinement on maintenance (~±3% from mid; total spread within ~6%) */
+function maintenanceMultiplierFromEstimatedBodyFat(key) {
+  switch (String(key ?? "")) {
+    case "very_lean":
+      return 1.03;
+    case "lean":
+      return 1.02;
+    case "athletic":
+      return 1.01;
+    case "fitness":
+      return 1;
+    case "average":
+      return 0.99;
+    case "above_average":
+      return 0.975;
+    case "high":
+      return 0.96;
+    default:
+      return 1;
+  }
+}
+
+function labelForEstimatedBodyFat(key) {
+  const row = estimatedBodyFatOptions.find((o) => o.value === String(key ?? ""));
+  return row ? row.label : "—";
+}
+
+function getProteinReferenceWeightWithBodyFatEstimate(weightLbs, totalHeightInches, estimateKey) {
+  const base = getProteinReferenceWeight(weightLbs, totalHeightInches);
+  const blend = proteinBlendFromEstimatedBodyFat(estimateKey);
+
+  if (blend === 0) {
+    return {
+      ...base,
+      bodyFatProteinBlend: 0,
+      estimatedBodyFatKey: estimateKey || null,
+    };
+  }
+
+  if (base.referenceMethod === "goal bodyweight") {
+    return {
+      ...base,
+      bodyFatProteinBlend: 0,
+      estimatedBodyFatKey: estimateKey || null,
+    };
+  }
+
+  const goalWeight = getGoalWeightFromHeight(totalHeightInches);
+  const fullW = Number(weightLbs);
+  const blended = round(fullW * (1 - blend) + goalWeight * blend);
+  let method = "coach body-fat blend (toward goal/adiposity proxy)";
+  if (blend <= 0.15) {
+    method = "current bodyweight (minor lean/adiposity blend)";
+  }
+
+  return {
+    bmi: base.bmi,
+    referenceWeight: blended,
+    referenceMethod: method,
+    bodyFatProteinBlend: blend,
+    estimatedBodyFatKey: estimateKey || null,
+  };
+}
+
 /** Stored as "male" | "female"; unknown / legacy omit → neutral multiplier */
 const sexStoredValues = [
   { value: "", label: "Select sex…" },
@@ -44,6 +142,7 @@ const defaultFormState = {
   overrideProteinGrams: "",
   overrideFatGrams: "",
   overrideCarbGrams: "",
+  estimatedBodyFatEstimate: "",
   customPlan: "",
   notes: "",
 };
@@ -380,8 +479,9 @@ function hydrateClient(payload) {
       : null;
   const maintenanceBaseline = baselineMaintenanceCalories(payload.weight, payload.activityMultiplier);
   const demo = demographicMaintenanceMultipliers(payload.sex, ageVal);
+  const bfMaintMult = maintenanceMultiplierFromEstimatedBodyFat(payload.estimatedBodyFatEstimate);
 
-  const maintenanceCalories = round(maintenanceBaseline * demo.combinedMultiplier);
+  const maintenanceCalories = round(maintenanceBaseline * demo.combinedMultiplier * bfMaintMult);
   const calorieTarget = calculateCalorieTarget(
     maintenanceCalories,
     payload.goal,
@@ -394,7 +494,11 @@ function hydrateClient(payload) {
 
   const split = computeTrainingRestDaysCalories(calorieTarget, trainingDaysPerWeek);
 
-  const proteinData = getProteinReferenceWeight(payload.weight, totalHeightInches);
+  const proteinData = getProteinReferenceWeightWithBodyFatEstimate(
+    payload.weight,
+    totalHeightInches,
+    payload.estimatedBodyFatEstimate
+  );
   const autoProteinGrams = round(proteinData.referenceWeight);
   const fatPercent = Number(payload.fatPercent || 25);
 
@@ -423,6 +527,11 @@ function hydrateClient(payload) {
     demographicSexMultiplier: demo.sexMultiplier,
     demographicAgeMultiplier: demo.ageMultiplier,
     demographicMultiplier: demo.combinedMultiplier,
+    bodyFatMaintenanceMultiplier: bfMaintMult,
+    bodyFatProteinBlend: proteinData.bodyFatProteinBlend ?? 0,
+    estimatedBodyFatEstimate: payload.estimatedBodyFatEstimate
+      ? String(payload.estimatedBodyFatEstimate)
+      : null,
     trainingDaysPerWeek,
     totalHeightInches,
     maintenanceCalories,
@@ -465,6 +574,7 @@ function normalizeClientRecord(id, data) {
     _id: id,
     sex: data.sex,
     age: data.age ?? null,
+    estimatedBodyFatEstimate: data.estimatedBodyFatEstimate ?? null,
     trainingDaysPerWeek: data.trainingDaysPerWeek ?? 5,
     fatPercent: data.fatPercent ?? 25,
     overrideCalorieTarget: data.overrideCalorieTarget ?? null,
@@ -530,8 +640,15 @@ function Dashboard() {
       ageForDemo = Number(formData.age);
     }
     const { combinedMultiplier } = demographicMaintenanceMultipliers(formData.sex || null, ageForDemo);
-    return round(base * combinedMultiplier);
-  }, [formData.weight, formData.activityMultiplier, formData.sex, formData.age]);
+    const bfMaint = maintenanceMultiplierFromEstimatedBodyFat(formData.estimatedBodyFatEstimate);
+    return round(base * combinedMultiplier * bfMaint);
+  }, [
+    formData.weight,
+    formData.activityMultiplier,
+    formData.sex,
+    formData.age,
+    formData.estimatedBodyFatEstimate,
+  ]);
 
   const targetPreview = useMemo(() => {
     if (!maintenancePreview) {
@@ -554,9 +671,11 @@ function Dashboard() {
       return { protein: 0, fat: 0, carbs: 0 };
     }
 
-    const proteinAuto = getProteinReferenceWeight(
+    const tin = Number(formData.heightFeet || 0) * 12 + Number(formData.heightInchesPart || 0);
+    const proteinAuto = getProteinReferenceWeightWithBodyFatEstimate(
       formData.weight,
-      Number(formData.heightFeet || 0) * 12 + Number(formData.heightInchesPart || 0)
+      tin,
+      formData.estimatedBodyFatEstimate
     ).referenceWeight;
     const fatPercent = Number(formData.fatPercent || 25);
     const fatCalories = Math.round(targetPreview * (fatPercent / 100));
@@ -573,6 +692,7 @@ function Dashboard() {
     formData.heightFeet,
     formData.heightInchesPart,
     formData.fatPercent,
+    formData.estimatedBodyFatEstimate,
     formData.overrideProteinGrams,
     formData.overrideFatGrams,
     formData.overrideCarbGrams,
@@ -586,7 +706,11 @@ function Dashboard() {
     const split = computeTrainingRestDaysCalories(targetPreview, formData.trainingDaysPerWeek ?? 5);
     const tin =
       Number(formData.heightFeet || 0) * 12 + Number(formData.heightInchesPart || 0);
-    const protBase = getProteinReferenceWeight(Number(formData.weight), tin).referenceWeight;
+    const protBase = getProteinReferenceWeightWithBodyFatEstimate(
+      Number(formData.weight),
+      tin,
+      formData.estimatedBodyFatEstimate
+    ).referenceWeight;
     const proteinGm =
       formData.overrideProteinGrams !== "" && Number(formData.overrideProteinGrams) >= 0
         ? Number(formData.overrideProteinGrams)
@@ -603,6 +727,7 @@ function Dashboard() {
     formData.heightFeet,
     formData.heightInchesPart,
     formData.fatPercent,
+    formData.estimatedBodyFatEstimate,
     formData.overrideProteinGrams,
     formData.trainingDaysPerWeek,
   ]);
@@ -654,6 +779,8 @@ function Dashboard() {
         activityMultiplier: Number(formData.activityMultiplier),
         goal: formData.goal,
         trainingDaysPerWeek: clampTrainingDays(formData.trainingDaysPerWeek ?? 5),
+        estimatedBodyFatEstimate:
+          formData.estimatedBodyFatEstimate === "" ? null : formData.estimatedBodyFatEstimate,
         customPlan: formData.customPlan || "",
         notes: formData.notes || "",
         fatPercent: Number(formData.fatPercent || 25),
@@ -806,6 +933,20 @@ function Dashboard() {
             />
           </label>
           <label>
+            Estimated body fat % (optional, coach visual)
+            <select
+              name="estimatedBodyFatEstimate"
+              value={formData.estimatedBodyFatEstimate}
+              onChange={handleChange}
+            >
+              {estimatedBodyFatOptions.map((opt) => (
+                <option key={opt.value || "none"} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
             Override calorie target (optional)
             <input
               name="overrideCalorieTarget"
@@ -870,7 +1011,9 @@ function Dashboard() {
             <strong>Preview</strong>
             <p>
               Maintenance: {maintenancePreview || "-"} kcal/day{" "}
-              <span className="muted-text">(baseline weight × activity, adjusted for sex &amp; age)</span>
+              <span className="muted-text">
+                (baseline × activity × sex/age × optional estimated body-fat tweak)
+              </span>
             </p>
             <p>
               Target (weekly average): {targetPreview || "-"} kcal/day — weekly budget{" "}
@@ -958,6 +1101,7 @@ function ClientProfile() {
     goal: "Maintenance",
     fatPercent: 25,
     trainingDaysPerWeek: 5,
+    estimatedBodyFatEstimate: "",
     overrideCalorieTarget: "",
     overrideProteinGrams: "",
     overrideFatGrams: "",
@@ -989,6 +1133,7 @@ function ClientProfile() {
       goal: data.goal ?? "Maintenance",
       fatPercent: data.fatPercent ?? 25,
       trainingDaysPerWeek: data.trainingDaysPerWeek ?? 5,
+      estimatedBodyFatEstimate: data.estimatedBodyFatEstimate ?? "",
       overrideCalorieTarget: data.overrideCalorieTarget ?? "",
       overrideProteinGrams: data.overrideProteinGrams ?? "",
       overrideFatGrams: data.overrideFatGrams ?? "",
@@ -1020,6 +1165,7 @@ function ClientProfile() {
           goal: data.goal ?? "Maintenance",
           fatPercent: data.fatPercent ?? 25,
           trainingDaysPerWeek: data.trainingDaysPerWeek ?? 5,
+          estimatedBodyFatEstimate: data.estimatedBodyFatEstimate ?? "",
           overrideCalorieTarget: data.overrideCalorieTarget ?? "",
           overrideProteinGrams: data.overrideProteinGrams ?? "",
           overrideFatGrams: data.overrideFatGrams ?? "",
@@ -1059,6 +1205,8 @@ function ClientProfile() {
         goal: formData.goal,
         fatPercent: Number(formData.fatPercent || 25),
         trainingDaysPerWeek: clampTrainingDays(formData.trainingDaysPerWeek ?? 5),
+        estimatedBodyFatEstimate:
+          formData.estimatedBodyFatEstimate === "" ? null : formData.estimatedBodyFatEstimate,
         overrideCalorieTarget: toNullableNumber(formData.overrideCalorieTarget),
         overrideProteinGrams: toNullableNumber(formData.overrideProteinGrams),
         overrideFatGrams: toNullableNumber(formData.overrideFatGrams),
@@ -1172,14 +1320,18 @@ function ClientProfile() {
             <strong>Activity Multiplier:</strong> {client.activityMultiplier}
           </p>
           <p>
+            <strong>Est. body fat % (coach visual):</strong>{" "}
+            {labelForEstimatedBodyFat(client.estimatedBodyFatEstimate)}
+          </p>
+          <p>
             <strong>Maintenance baseline:</strong> {client.maintenanceBaselineCalories ?? "—"} kcal/day{" "}
             <span className="muted-text">(bodyweight × activity)</span>
           </p>
           <p>
             <strong>Adjusted maintenance:</strong> {client.maintenanceCalories} kcal/day{" "}
             <span className="muted-text">
-              (scaled × {client.demographicMultiplier?.toFixed(3) ?? "1.000"} vs baseline for sex
-              &amp; age when provided)
+              (baseline × sex/age × {client.demographicMultiplier?.toFixed(3) ?? "1.000"} × estimated body-fat tweak{" "}
+              {client.bodyFatMaintenanceMultiplier?.toFixed(3) ?? "1.000"}; light refinement only)
             </span>
           </p>
           <p>
@@ -1216,6 +1368,12 @@ function ClientProfile() {
             <strong>Protein Reference:</strong> {client.proteinReferenceWeight} lbs (
             {client.proteinReferenceMethod})
           </p>
+          {Number(client.bodyFatProteinBlend) > 0 && (
+            <p className="muted-text">
+              Coach BF estimate adjusts protein anchor ~{(Number(client.bodyFatProteinBlend) * 100).toFixed(0)}%
+              toward goal-weight emphasis (skipped when BMI-based obesity rule applies).
+            </p>
+          )}
           <p>
             <strong>Protein:</strong> {client.proteinGrams} g
           </p>
@@ -1396,6 +1554,21 @@ function ClientProfile() {
                 }))
               }
             />
+          </label>
+          <label>
+            Estimated body fat % (optional, coach visual)
+            <select
+              value={formData.estimatedBodyFatEstimate}
+              onChange={(event) =>
+                setFormData((prev) => ({ ...prev, estimatedBodyFatEstimate: event.target.value }))
+              }
+            >
+              {estimatedBodyFatOptions.map((opt) => (
+                <option key={opt.value || "none"} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
           </label>
           <label>
             Override calorie target (optional)
