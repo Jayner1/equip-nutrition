@@ -22,16 +22,16 @@ const activityOptions = [
 
 const goals = ["Cut", "Bulk", "Maintenance"];
 
-/** Optional coach visual estimate → protein blend toward goal weight & light maintenance tweak */
-const estimatedBodyFatOptions = [
+/** Coach-selected metabolic leaning → protein blend toward goal weight & light maintenance tweak */
+const metabolicAdjustmentOptions = [
   { value: "", label: "Not specified (neutral)" },
-  { value: "very_lean", label: "~10–13% (very lean)" },
-  { value: "lean", label: "~14–17% (lean)" },
-  { value: "athletic", label: "~18–22% (athletic)" },
-  { value: "fitness", label: "~23–27% (fitness)" },
-  { value: "average", label: "~28–32% (average)" },
-  { value: "above_average", label: "~33–38% (above average)" },
-  { value: "high", label: "~39–45%+ (high)" },
+  { value: "very_lean", label: "Very lean" },
+  { value: "lean", label: "Lean" },
+  { value: "athletic", label: "Athletic" },
+  { value: "fitness", label: "Fitness-oriented" },
+  { value: "average", label: "Moderate — average build" },
+  { value: "above_average", label: "Higher body mass — soft tissue" },
+  { value: "high", label: "Heavier build emphasis" },
 ];
 
 /** 0 = full bodyweight tilt; 1 = max blend toward BMI-24.9 goal weight */
@@ -78,8 +78,8 @@ function maintenanceMultiplierFromEstimatedBodyFat(key) {
   }
 }
 
-function labelForEstimatedBodyFat(key) {
-  const row = estimatedBodyFatOptions.find((o) => o.value === String(key ?? ""));
+function labelForMetabolicAdjustment(key) {
+  const row = metabolicAdjustmentOptions.find((o) => o.value === String(key ?? ""));
   return row ? row.label : "—";
 }
 
@@ -109,7 +109,9 @@ function formatPhysiqueHint(score) {
   const pctVsNeutral = ((mult - neutral) / neutral) * 100;
   const rounded = mult.toFixed(3);
   const pctStr =
-    Math.abs(pctVsNeutral) < 0.05 ? "at neutral" : `${pctVsNeutral >= 0 ? "+" : ""}${pctVsNeutral.toFixed(1)}% vs neutral`;
+    Math.abs(pctVsNeutral) < 0.05
+      ? "at neutral"
+      : `${pctVsNeutral >= 0 ? "+" : ""}${pctVsNeutral.toFixed(1)} pts vs neutral`;
   return { mult, rounded, pctStr };
 }
 
@@ -136,9 +138,9 @@ function getProteinReferenceWeightWithBodyFatEstimate(weightLbs, totalHeightInch
   const goalWeight = getGoalWeightFromHeight(totalHeightInches);
   const fullW = Number(weightLbs);
   const blended = round(fullW * (1 - blend) + goalWeight * blend);
-  let method = "coach body-fat blend (toward goal/adiposity proxy)";
+  let method = "metabolic adjustment blend (toward goal-weight proxy)";
   if (blend <= 0.15) {
-    method = "current bodyweight (minor lean/adiposity blend)";
+    method = "current bodyweight (minor metabolic blend)";
   }
 
   return {
@@ -972,13 +974,13 @@ function Dashboard() {
             />
           </label>
           <label>
-            Estimated body fat % (optional, coach visual)
+            Metabolic adjustment (optional)
             <select
               name="estimatedBodyFatEstimate"
               value={formData.estimatedBodyFatEstimate}
               onChange={handleChange}
             >
-              {estimatedBodyFatOptions.map((opt) => (
+              {metabolicAdjustmentOptions.map((opt) => (
                 <option key={opt.value || "none"} value={opt.value}>
                   {opt.label}
                 </option>
@@ -1051,7 +1053,7 @@ function Dashboard() {
             <p>
               Maintenance: {maintenancePreview || "-"} kcal/day{" "}
               <span className="muted-text">
-                (baseline × activity × sex/age × optional estimated body-fat tweak)
+                (baseline × activity × sex/age × optional metabolic adjustment)
               </span>
             </p>
             <p>
@@ -1391,8 +1393,8 @@ function ClientProfile() {
             <strong>Activity Multiplier:</strong> {client.activityMultiplier}
           </p>
           <p>
-            <strong>Est. body fat % (coach visual):</strong>{" "}
-            {labelForEstimatedBodyFat(client.estimatedBodyFatEstimate)}
+            <strong>Metabolic adjustment:</strong>{" "}
+            {labelForMetabolicAdjustment(client.estimatedBodyFatEstimate)}
           </p>
           <p>
             <strong>Maintenance baseline:</strong> {client.maintenanceBaselineCalories ?? "—"} kcal/day{" "}
@@ -1401,7 +1403,7 @@ function ClientProfile() {
           <p>
             <strong>Adjusted maintenance:</strong> {client.maintenanceCalories} kcal/day{" "}
             <span className="muted-text">
-              (baseline × sex/age × {client.demographicMultiplier?.toFixed(3) ?? "1.000"} × est. body-fat{" "}
+              (baseline × sex/age × {client.demographicMultiplier?.toFixed(3) ?? "1.000"} × metabolic adj.{" "}
               {client.bodyFatMaintenanceMultiplier?.toFixed(3) ?? "1.000"} × physique adjustment{" "}
               {client.physiqueMaintenanceMultiplier?.toFixed(3) ?? "1.000"}; protein unchanged)
             </span>
@@ -1442,8 +1444,8 @@ function ClientProfile() {
           </p>
           {Number(client.bodyFatProteinBlend) > 0 && (
             <p className="muted-text">
-              Coach BF estimate adjusts protein anchor ~{(Number(client.bodyFatProteinBlend) * 100).toFixed(0)}%
-              toward goal-weight emphasis (skipped when BMI-based obesity rule applies).
+              Metabolic adjustment refines protein toward goal-weight emphasis (skipped when BMI-based obesity
+              rule applies).
             </p>
           )}
           <p>
@@ -1675,14 +1677,14 @@ function ClientProfile() {
             />
           </label>
           <label>
-            Estimated body fat % (optional, coach visual)
+            Metabolic adjustment (optional)
             <select
               value={formData.estimatedBodyFatEstimate}
               onChange={(event) =>
                 setFormData((prev) => ({ ...prev, estimatedBodyFatEstimate: event.target.value }))
               }
             >
-              {estimatedBodyFatOptions.map((opt) => (
+              {metabolicAdjustmentOptions.map((opt) => (
                 <option key={opt.value || "none"} value={opt.value}>
                   {opt.label}
                 </option>
